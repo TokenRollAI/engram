@@ -1,33 +1,40 @@
 //! VLM 分析后台任务
 //!
-//! 定期处理待分析的 traces，调用 VLM 进行屏幕理解，
+//! 支持并发处理待分析的 traces，调用 VLM 进行屏幕理解，
 //! 更新 ocr_text 和 ocr_json，并生成文本嵌入。
 
 use crate::ai::embedding::TextEmbedder;
 use crate::ai::vlm::VlmEngine;
 use crate::db::{Database, Trace};
+use futures::stream::{self, StreamExt};
 use image::RgbImage;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+use tokio::sync::Semaphore;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
-/// VLM 任务处理间隔（毫秒）- 默认 10 秒
-const DEFAULT_PROCESS_INTERVAL_MS: u64 = 10_000;
+/// VLM 任务处理间隔（毫秒）- 默认 5 秒
+const DEFAULT_PROCESS_INTERVAL_MS: u64 = 5_000;
 
 /// 每批处理的最大 traces 数量
-const DEFAULT_BATCH_SIZE: u32 = 5;
+const DEFAULT_BATCH_SIZE: u32 = 10;
+
+/// 默认并发数
+const DEFAULT_CONCURRENCY: u32 = 3;
 
 /// VLM 分析任务配置
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VlmTaskConfig {
     /// 处理间隔（毫秒）
     pub interval_ms: u64,
     /// 每批处理数量
     pub batch_size: u32,
+    /// 并发请求数量
+    pub concurrency: u32,
     /// 是否启用
     pub enabled: bool,
 }
@@ -37,6 +44,7 @@ impl Default for VlmTaskConfig {
         Self {
             interval_ms: DEFAULT_PROCESS_INTERVAL_MS,
             batch_size: DEFAULT_BATCH_SIZE,
+            concurrency: DEFAULT_CONCURRENCY,
             enabled: true,
         }
     }
@@ -53,6 +61,8 @@ pub struct VlmTaskStatus {
     pub failed_count: u64,
     /// 待处理的 traces 数量
     pub pending_count: u64,
+    /// 当前并发数配置
+    pub concurrency: u32,
 }
 
 /// VLM 分析后台任务
@@ -110,17 +120,19 @@ impl VlmTask {
         let db = self.db.clone();
         let vlm = self.vlm.clone();
         let embedder = self.embedder.clone();
-        let interval_ms = self.config.interval_ms;
-        let batch_size = self.config.batch_size;
+        let config = self.config.clone();
 
         is_running.store(true, Ordering::SeqCst);
 
         tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_millis(interval_ms));
+            let mut ticker = interval(Duration::from_millis(config.interval_ms));
+
+            // 创建并发控制信号量
+            let semaphore = Arc::new(Semaphore::new(config.concurrency as usize));
 
             info!(
-                "VLM task loop started (interval: {}ms, batch_size: {})",
-                interval_ms, batch_size
+                "VLM task loop started (interval: {}ms, batch_size: {}, concurrency: {})",
+                config.interval_ms, config.batch_size, config.concurrency
             );
 
             loop {
@@ -141,18 +153,19 @@ impl VlmTask {
                             continue;
                         }
 
-                        // 处理待分析的 traces
-                        match Self::process_pending_traces(
+                        // 并发处理待分析的 traces
+                        match Self::process_pending_traces_concurrent(
                             &db,
                             &vlm,
                             &embedder,
-                            batch_size,
+                            &semaphore,
+                            config.batch_size,
                             &processed_count,
                             &failed_count,
                         ).await {
                             Ok(count) => {
                                 if count > 0 {
-                                    debug!("Processed {} traces this batch", count);
+                                    info!("Processed {} traces this batch (concurrency: {})", count, config.concurrency);
                                 }
                             }
                             Err(e) => {
@@ -186,14 +199,21 @@ impl VlmTask {
             processed_count: self.processed_count.load(Ordering::SeqCst),
             failed_count: self.failed_count.load(Ordering::SeqCst),
             pending_count,
+            concurrency: self.config.concurrency,
         }
     }
 
-    /// 处理待分析的 traces
-    async fn process_pending_traces(
+    /// 获取当前配置
+    pub fn config(&self) -> &VlmTaskConfig {
+        &self.config
+    }
+
+    /// 并发处理待分析的 traces
+    async fn process_pending_traces_concurrent(
         db: &Arc<Database>,
         vlm: &Arc<RwLock<Option<VlmEngine>>>,
         embedder: &Arc<RwLock<TextEmbedder>>,
+        semaphore: &Arc<Semaphore>,
         batch_size: u32,
         processed_count: &Arc<AtomicU64>,
         failed_count: &Arc<AtomicU64>,
@@ -205,20 +225,44 @@ impl VlmTask {
             return Ok(0);
         }
 
-        debug!("Found {} pending traces to process", pending_traces.len());
+        let trace_count = pending_traces.len();
+        debug!("Found {} pending traces to process concurrently", trace_count);
 
+        // 并发处理所有 traces
+        let results: Vec<Result<i64, (i64, String)>> = stream::iter(pending_traces)
+            .map(|trace| {
+                let db = db.clone();
+                let vlm = vlm.clone();
+                let embedder = embedder.clone();
+                let semaphore = semaphore.clone();
+
+                async move {
+                    // 获取信号量许可，控制并发数
+                    let _permit = semaphore.acquire().await.unwrap();
+
+                    let trace_id = trace.id;
+                    match Self::process_single_trace(&db, &vlm, &embedder, &trace).await {
+                        Ok(_) => Ok(trace_id),
+                        Err(e) => Err((trace_id, e.to_string())),
+                    }
+                }
+            })
+            .buffer_unordered(batch_size as usize) // 允许并发执行
+            .collect()
+            .await;
+
+        // 统计结果
         let mut success_count = 0u32;
-
-        for trace in pending_traces {
-            match Self::process_single_trace(db, vlm, embedder, &trace).await {
-                Ok(_) => {
+        for result in results {
+            match result {
+                Ok(trace_id) => {
                     processed_count.fetch_add(1, Ordering::SeqCst);
                     success_count += 1;
-                    debug!("Successfully processed trace {}", trace.id);
+                    debug!("Successfully processed trace {}", trace_id);
                 }
-                Err(e) => {
+                Err((trace_id, err)) => {
                     failed_count.fetch_add(1, Ordering::SeqCst);
-                    warn!("Failed to process trace {}: {}", trace.id, e);
+                    warn!("Failed to process trace {}: {}", trace_id, err);
                 }
             }
         }
@@ -237,11 +281,12 @@ impl VlmTask {
         let image_path_str = trace.image_path.as_ref()
             .ok_or_else(|| anyhow::anyhow!("Trace {} has no image_path", trace.id))?;
 
-        // 2. 加载图片
-        let image_path = db.get_full_path(image_path_str);
-        let image = Self::load_image(&image_path)?;
+        // 2. 加载图片（同步操作，在 spawn_blocking 中执行）
+        let path = db.get_full_path(image_path_str);
+        let image = tokio::task::spawn_blocking(move || Self::load_image(&path))
+            .await??;
 
-        // 3. 调用 VLM 分析
+        // 3. 调用 VLM 分析（异步 HTTP 请求，可并发）
         let description = {
             let vlm_guard = vlm.read().await;
             let vlm_engine = vlm_guard
@@ -257,7 +302,7 @@ impl VlmTask {
         // 5. 更新数据库（OCR 数据）
         db.update_trace_ocr(trace.id, &ocr_text, &ocr_json)?;
 
-        // 6. 生成嵌入向量
+        // 6. 生成嵌入向量（异步操作）
         let embedding = {
             let embedder_guard = embedder.read().await;
             embedder_guard.embed(&ocr_text).await?
