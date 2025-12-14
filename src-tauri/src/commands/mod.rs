@@ -6,6 +6,8 @@ use crate::ai::{EmbeddingConfig, VlmConfig};
 use crate::daemon::{DaemonStatus, VlmTaskConfig};
 use crate::db::models::{Entity, SearchResult, Settings, StorageStats, Summary, Trace};
 use crate::AppState;
+use serde::Serialize;
+use std::path::Path;
 use tauri::State;
 use tracing::{debug, info, warn};
 
@@ -78,6 +80,57 @@ pub async fn get_image_path(
     relative_path: String,
 ) -> Result<String, String> {
     Ok(state.db.get_full_path_string(&relative_path))
+}
+
+#[derive(Serialize)]
+pub struct ImageData {
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+fn infer_mime_from_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
+/// 获取图片数据（返回 bytes + mime）
+/// 用于前端通过 Blob URL 展示，绕开 Windows WebView2 的 asset protocol 限制。
+#[tauri::command]
+pub async fn get_image_data(
+    state: State<'_, AppState>,
+    relative_path: String,
+) -> Result<ImageData, String> {
+    let full_path = state.db.get_full_path(&relative_path);
+    let mime = infer_mime_from_path(&full_path).to_string();
+    let bytes = std::fs::read(&full_path).map_err(|e| e.to_string())?;
+    Ok(ImageData { mime, bytes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::infer_mime_from_path;
+    use std::path::Path;
+
+    #[test]
+    fn infer_mime_from_path_handles_common_extensions() {
+        assert_eq!(infer_mime_from_path(Path::new("a.jpg")), "image/jpeg");
+        assert_eq!(infer_mime_from_path(Path::new("a.JPEG")), "image/jpeg");
+        assert_eq!(infer_mime_from_path(Path::new("a.png")), "image/png");
+        assert_eq!(infer_mime_from_path(Path::new("a.webp")), "image/webp");
+        assert_eq!(
+            infer_mime_from_path(Path::new("a.unknownext")),
+            "application/octet-stream"
+        );
+    }
 }
 
 /// 搜索痕迹

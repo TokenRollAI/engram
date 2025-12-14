@@ -1,6 +1,5 @@
-import { Component, createSignal, createEffect, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { format, startOfDay, endOfDay, addDays, subDays } from "date-fns";
 import { zhCN } from "date-fns/locale";
 
@@ -17,6 +16,11 @@ interface Trace {
   created_at: number;
 }
 
+interface ImageData {
+  mime: string;
+  bytes: number[];
+}
+
 const Timeline: Component = () => {
   const [selectedDate, setSelectedDate] = createSignal(new Date());
   const [traces, setTraces] = createSignal<Trace[]>([]);
@@ -25,6 +29,12 @@ const Timeline: Component = () => {
   const [selectedImageSrc, setSelectedImageSrc] = createSignal<string | null>(null);
   const [collapsedHours, setCollapsedHours] = createSignal<Set<number>>(new Set());
   const [imageCache, setImageCache] = createSignal<Map<string, string>>(new Map());
+
+  const revokeImageCache = (cache: Map<string, string>) => {
+    for (const url of cache.values()) {
+      URL.revokeObjectURL(url);
+    }
+  };
 
   // 加载数据
   const loadTraces = async (date: Date) => {
@@ -41,8 +51,11 @@ const Timeline: Component = () => {
       });
 
       setTraces(data);
-      // 清空图片缓存
-      setImageCache(new Map());
+      // 清空图片缓存（Blob URL 需要 revoke）
+      setImageCache(prev => {
+        revokeImageCache(prev);
+        return new Map();
+      });
     } catch (e) {
       console.error("Failed to load traces:", e);
     } finally {
@@ -56,12 +69,13 @@ const Timeline: Component = () => {
     if (cached) return cached;
 
     try {
-      const fullPath = await invoke<string>("get_image_path", { relativePath });
-      const src = convertFileSrc(fullPath);
+      const payload = await invoke<ImageData>("get_image_data", { relativePath });
+      const blob = new Blob([new Uint8Array(payload.bytes)], { type: payload.mime || "image/jpeg" });
+      const src = URL.createObjectURL(blob);
       setImageCache(prev => new Map(prev).set(relativePath, src));
       return src;
     } catch (e) {
-      console.error("Failed to get image path:", e);
+      console.error("Failed to get image data:", e);
       return null;
     }
   };
@@ -69,6 +83,10 @@ const Timeline: Component = () => {
   // 监听日期变化
   createEffect(() => {
     loadTraces(selectedDate());
+  });
+
+  onCleanup(() => {
+    revokeImageCache(imageCache());
   });
 
   // 日期导航

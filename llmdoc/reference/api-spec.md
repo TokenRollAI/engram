@@ -32,6 +32,12 @@ invoke('get_traces', {
   offset?: number,
 }): Promise<Trace[]>
 
+// 获取截图图片数据（用于 UI 展示）
+// 前端推荐用 Blob URL 渲染：URL.createObjectURL(new Blob([bytes], { type: mime }))
+invoke('get_image_data', {
+  relative_path: string,
+}): Promise<{ mime: string, bytes: number[] }>
+
 // 搜索痕迹
 invoke('search_traces', {
   query: string,

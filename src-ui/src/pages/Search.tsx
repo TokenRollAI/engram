@@ -1,6 +1,5 @@
 import { Component, createSignal, For, Show, onMount, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { zhCN } from "date-fns/locale";
 
@@ -21,6 +20,11 @@ interface SearchResult {
   trace: Trace;
   score: number;
   highlights: { text: string; start: number; end: number }[];
+}
+
+interface ImageData {
+  mime: string;
+  bytes: number[];
 }
 
 interface AiStatus {
@@ -64,6 +68,7 @@ const Search: Component = () => {
   // 详情弹窗
   const [selectedResult, setSelectedResult] = createSignal<SearchResult | null>(null);
   const [selectedImageSrc, setSelectedImageSrc] = createSignal<string | null>(null);
+  let selectedImageObjectUrl: string | null = null;
 
   // 搜索框引用
   let searchInputRef: HTMLInputElement | undefined;
@@ -222,10 +227,11 @@ const Search: Component = () => {
   // 获取图片源
   const getImageSrc = async (relativePath: string): Promise<string | null> => {
     try {
-      const fullPath = await invoke<string>("get_image_path", { relativePath });
-      return convertFileSrc(fullPath);
+      const payload = await invoke<ImageData>("get_image_data", { relativePath });
+      const blob = new Blob([new Uint8Array(payload.bytes)], { type: payload.mime || "image/jpeg" });
+      return URL.createObjectURL(blob);
     } catch (e) {
-      console.error("Failed to get image path:", e);
+      console.error("Failed to get image data:", e);
       return null;
     }
   };
@@ -235,14 +241,20 @@ const Search: Component = () => {
     setSelectedResult(result);
     if (result.trace.image_path) {
       const src = await getImageSrc(result.trace.image_path);
+      if (selectedImageObjectUrl) URL.revokeObjectURL(selectedImageObjectUrl);
+      selectedImageObjectUrl = src;
       setSelectedImageSrc(src);
     } else {
+      if (selectedImageObjectUrl) URL.revokeObjectURL(selectedImageObjectUrl);
+      selectedImageObjectUrl = null;
       setSelectedImageSrc(null);
     }
   };
 
   // 关闭详情
   const closeDetail = () => {
+    if (selectedImageObjectUrl) URL.revokeObjectURL(selectedImageObjectUrl);
+    selectedImageObjectUrl = null;
     setSelectedResult(null);
     setSelectedImageSrc(null);
   };
@@ -271,6 +283,7 @@ const Search: Component = () => {
   });
 
   onCleanup(() => {
+    if (selectedImageObjectUrl) URL.revokeObjectURL(selectedImageObjectUrl);
     window.removeEventListener("keydown", handleGlobalKeyDown);
   });
 
@@ -649,14 +662,21 @@ const Search: Component = () => {
 const ResultThumbnail: Component<{ imagePath: string }> = (props) => {
   const [src, setSrc] = createSignal<string | null>(null);
   const [error, setError] = createSignal(false);
+  let objectUrl: string | null = null;
 
   onMount(async () => {
     try {
-      const fullPath = await invoke<string>("get_image_path", { relativePath: props.imagePath });
-      setSrc(convertFileSrc(fullPath));
+      const payload = await invoke<ImageData>("get_image_data", { relativePath: props.imagePath });
+      const blob = new Blob([new Uint8Array(payload.bytes)], { type: payload.mime || "image/jpeg" });
+      objectUrl = URL.createObjectURL(blob);
+      setSrc(objectUrl);
     } catch {
       setError(true);
     }
+  });
+
+  onCleanup(() => {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
   });
 
   return (
