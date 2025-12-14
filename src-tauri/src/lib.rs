@@ -62,6 +62,7 @@ impl AppState {
             vlm.clone(),
             embedder.clone(),
             app_config.vlm_task.clone(),
+            app_config.session.clone(),
         )));
 
         // 5. 创建摘要任务（使用配置）
@@ -229,11 +230,13 @@ impl AppState {
         }
 
         // 创建新任务
+        let session_config = { self.config.read().await.session.clone() };
         let new_task = VlmTask::new(
             self.db.clone(),
             self.vlm.clone(),
             self.embedder.clone(),
             config,
+            session_config,
         );
 
         // 替换并启动

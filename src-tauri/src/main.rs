@@ -2,6 +2,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use engram_lib::{commands, AppState};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -10,6 +12,9 @@ use tauri::{
 };
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+/// 全局退出标记，用于区分"关闭窗口"和"真正退出"
+static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
 
 fn main() {
     // 初始化日志
@@ -74,7 +79,12 @@ fn main() {
         .expect("Failed to build Tauri application")
         .run(|app_handle, event| {
             if let RunEvent::ExitRequested { api, .. } = event {
-                // 阻止默认退出，隐藏到托盘
+                // 检查是否是真正的退出请求（托盘菜单点击退出）
+                if SHOULD_EXIT.load(Ordering::SeqCst) {
+                    // 允许退出
+                    return;
+                }
+                // 否则阻止退出，隐藏到托盘
                 api.prevent_exit();
                 if let Some(window) = app_handle.get_webview_window("main") {
                     let _ = window.hide();
@@ -119,6 +129,7 @@ fn setup_tray(app: &tauri::App) -> anyhow::Result<()> {
             }
             "quit" => {
                 info!("Quit requested");
+                SHOULD_EXIT.store(true, Ordering::SeqCst);
                 app.exit(0);
             }
             _ => {}

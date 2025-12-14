@@ -82,6 +82,7 @@
 - 新增“活动 Session”（用户行为聚合）作为对外主视图：`activity_sessions`
 - `traces` 保留为原子事实流，新增 `activity_session_id` 关联；VLM 结构化输出写入 `traces.vlm_*`
 - VlmTask：分析时使用“Session 信息 + 关键行为 + 最近 traces”作为上下文，并把 VLM 结论增量同步到 Session
+- Session 路由：从“按 app_name 归并”升级为“多线程（Active Sessions）+ 模型选择 existing_session_id + embedding 相似度兜底”
 - 新增关键行为：VLM 返回 `is_key_action` + `action_description`，写入 `traces.is_key_action` 并聚合到 `activity_sessions.key_actions_json`
 - Chat：新增线程/消息持久化（`chat_threads`/`chat_messages`），响应包含 `thread_id`
 - UI：Timeline 默认按 Session 展示，可展开查看 session 内 traces

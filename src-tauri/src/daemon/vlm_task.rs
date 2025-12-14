@@ -5,6 +5,7 @@
 
 use crate::ai::embedding::TextEmbedder;
 use crate::ai::vlm::VlmEngine;
+use crate::config::SessionConfig;
 use crate::db::{Database, Trace};
 use futures::stream::{self, StreamExt};
 use image::RgbImage;
@@ -71,6 +72,7 @@ pub struct VlmTask {
     vlm: Arc<RwLock<Option<VlmEngine>>>,
     embedder: Arc<RwLock<TextEmbedder>>,
     config: VlmTaskConfig,
+    session_config: SessionConfig,
     is_running: Arc<AtomicBool>,
     processed_count: Arc<AtomicU64>,
     failed_count: Arc<AtomicU64>,
@@ -84,12 +86,14 @@ impl VlmTask {
         vlm: Arc<RwLock<Option<VlmEngine>>>,
         embedder: Arc<RwLock<TextEmbedder>>,
         config: VlmTaskConfig,
+        session_config: SessionConfig,
     ) -> Self {
         Self {
             db,
             vlm,
             embedder,
             config,
+            session_config,
             is_running: Arc::new(AtomicBool::new(false)),
             processed_count: Arc::new(AtomicU64::new(0)),
             failed_count: Arc::new(AtomicU64::new(0)),
@@ -121,6 +125,7 @@ impl VlmTask {
         let vlm = self.vlm.clone();
         let embedder = self.embedder.clone();
         let config = self.config.clone();
+        let session_config = self.session_config.clone();
 
         is_running.store(true, Ordering::SeqCst);
 
@@ -158,6 +163,7 @@ impl VlmTask {
                             &db,
                             &vlm,
                             &embedder,
+                            &session_config,
                             &semaphore,
                             config.batch_size,
                             &processed_count,
@@ -213,6 +219,7 @@ impl VlmTask {
         db: &Arc<Database>,
         vlm: &Arc<RwLock<Option<VlmEngine>>>,
         embedder: &Arc<RwLock<TextEmbedder>>,
+        session_config: &SessionConfig,
         semaphore: &Arc<Semaphore>,
         batch_size: u32,
         processed_count: &Arc<AtomicU64>,
@@ -238,13 +245,16 @@ impl VlmTask {
                 let vlm = vlm.clone();
                 let embedder = embedder.clone();
                 let semaphore = semaphore.clone();
+                let session_config = session_config.clone();
 
                 async move {
                     // 获取信号量许可，控制并发数
                     let _permit = semaphore.acquire().await.unwrap();
 
                     let trace_id = trace.id;
-                    match Self::process_single_trace(&db, &vlm, &embedder, &trace).await {
+                    match Self::process_single_trace(&db, &vlm, &embedder, &session_config, &trace)
+                        .await
+                    {
                         Ok(_) => Ok(trace_id),
                         Err(e) => Err((trace_id, e.to_string())),
                     }
@@ -278,6 +288,7 @@ impl VlmTask {
         db: &Arc<Database>,
         vlm: &Arc<RwLock<Option<VlmEngine>>>,
         embedder: &Arc<RwLock<TextEmbedder>>,
+        session_config: &SessionConfig,
         trace: &Trace,
     ) -> anyhow::Result<()> {
         // 1. 获取图片路径
@@ -290,110 +301,120 @@ impl VlmTask {
         let path = db.get_full_path(image_path_str);
         let image = tokio::task::spawn_blocking(move || Self::load_image(&path)).await??;
 
-        // 3. 组装上下文（Session + 最近 1-2 条 trace），并调用 VLM 分析（异步 HTTP 请求，可并发）
-        let session_id = trace.activity_session_id;
-        let session = if let Some(sid) = session_id {
-            db.get_activity_session_by_id(sid)?
-        } else {
-            None
-        };
+        // 3. 多线程 Session：提供活跃线程列表作为上下文，并让模型选择 existing_session_id
+        let now_ts = trace.timestamp;
+        let mut parts: Vec<String> = Vec::new();
 
-        let context = if let Some(sid) = session_id {
-            let mut parts: Vec<String> = Vec::new();
+        parts.push(format!(
+            "【Current Trace Meta】\napp_name: {}\nwindow_title: {}\ntime: {}",
+            trace.app_name.as_deref().unwrap_or("-"),
+            trace.window_title.as_deref().unwrap_or("-"),
+            chrono::DateTime::from_timestamp_millis(now_ts)
+                .map(|t| t
+                    .with_timezone(&chrono::Local)
+                    .format("%m-%d %H:%M:%S")
+                    .to_string())
+                .unwrap_or_else(|| "?".to_string()),
+        ));
 
-            if let Some(s) = session.as_ref() {
-                parts.push(format!(
-                    "【Session Meta】\napp_name: {}\nstart: {}\nend: {}\ntrace_count: {}",
-                    s.app_name,
-                    chrono::DateTime::from_timestamp_millis(s.start_time)
-                        .map(|t| t
-                            .with_timezone(&chrono::Local)
+        let active_sessions = db.get_active_sessions_for_routing(
+            now_ts,
+            session_config.active_window_ms as i64,
+            session_config.max_active_sessions,
+        )?;
+
+        if !active_sessions.is_empty() {
+            parts.push("【Active Sessions（Threads）】\n请在输出 JSON 中用 existing_session_id 选择其中一个 session_id；如果都不匹配则为 null。".to_string());
+            for s in active_sessions.iter() {
+                let st = chrono::DateTime::from_timestamp_millis(s.start_time)
+                    .map(|t| {
+                        t.with_timezone(&chrono::Local)
                             .format("%m-%d %H:%M")
-                            .to_string())
-                        .unwrap_or_else(|| "?".to_string()),
-                    chrono::DateTime::from_timestamp_millis(s.end_time)
-                        .map(|t| t
-                            .with_timezone(&chrono::Local)
+                            .to_string()
+                    })
+                    .unwrap_or_else(|| "?".to_string());
+                let et = chrono::DateTime::from_timestamp_millis(s.end_time)
+                    .map(|t| {
+                        t.with_timezone(&chrono::Local)
                             .format("%m-%d %H:%M")
-                            .to_string())
-                        .unwrap_or_else(|| "?".to_string()),
-                    s.trace_count
-                ));
+                            .to_string()
+                    })
+                    .unwrap_or_else(|| "?".to_string());
 
-                if let Some(title) = s.title.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
-                    parts.push(format!("【Session Title】\n{}", title));
-                }
-                if let Some(desc) = s
+                let title = s
+                    .title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
+                    .unwrap_or(&s.app_name);
+                let desc = s
                     .description
                     .as_deref()
                     .map(str::trim)
                     .filter(|x| !x.is_empty())
+                    .unwrap_or("");
+
+                let mut block = format!(
+                    "- session_id={} ({st}~{et}) title=\"{}\" app_name=\"{}\" trace_count={}",
+                    s.id, title, s.app_name, s.trace_count
+                );
+                if !desc.is_empty() {
+                    block.push_str(&format!("\n  description: {}", desc));
+                }
+                if let Some(kaj) = s
+                    .key_actions_json
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
                 {
-                    parts.push(format!("【Session Description】\n{}", desc));
-                }
-
-                if let Some(ctx) = s.context_text.as_deref() {
-                    let ctx = ctx.trim();
-                    if !ctx.is_empty() {
-                        parts.push(format!("【Session Context】\n{}", ctx));
+                    if let Some(last3) = Self::format_key_actions_for_context_with_header(
+                        kaj,
+                        3,
+                        "  last_key_actions:",
+                    ) {
+                        block.push_str(&format!("\n{}", last3));
                     }
                 }
+                parts.push(block);
+            }
+        }
 
-                if let Some(kaj) = s.key_actions_json.as_deref() {
-                    let kaj = kaj.trim();
-                    if !kaj.is_empty() {
-                        if let Some(formatted) = Self::format_key_actions_for_context(kaj, 30) {
-                            parts.push(formatted);
-                        }
-                        if let Some(last3) = Self::format_key_actions_for_context_with_header(
-                            kaj,
-                            3,
-                            "【Last 3 Key Actions（最近3条）】",
-                        ) {
-                            parts.push(last3);
-                        }
+        if let Ok(recent) = db.get_recent_traces_before(trace.timestamp, 2) {
+            let mut lines = Vec::new();
+            for t in recent {
+                if let Some(text) = t.ocr_text {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        let snippet: String = text.chars().take(220).collect();
+                        lines.push(format!("- {}", snippet));
                     }
                 }
             }
-
-            if let Ok(recent) = db.get_recent_traces_in_session_before(sid, trace.timestamp, 2) {
-                let mut lines = Vec::new();
-                for t in recent {
-                    if let Some(text) = t.ocr_text {
-                        let text = text.trim();
-                        if !text.is_empty() {
-                            let snippet: String = text.chars().take(200).collect();
-                            lines.push(format!("- {}", snippet));
-                        }
-                    }
-                }
-                if !lines.is_empty() {
-                    parts.push(format!("【Recent Traces OCR】\n{}", lines.join("\n")));
-                }
+            if !lines.is_empty() {
+                parts.push(format!(
+                    "【Recent Global Traces OCR】\n{}",
+                    lines.join("\n")
+                ));
             }
+        }
 
-            if parts.is_empty() {
-                None
+        let context = {
+            const MAX_CONTEXT_CHARS: usize = 262_144; // 256K
+            let joined = parts.join("\n\n");
+            if joined.chars().count() > MAX_CONTEXT_CHARS {
+                Some(
+                    joined
+                        .chars()
+                        .rev()
+                        .take(MAX_CONTEXT_CHARS)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect(),
+                )
             } else {
-                const MAX_CONTEXT_CHARS: usize = 262_144; // 256K
-                let joined = parts.join("\n\n");
-                if joined.chars().count() > MAX_CONTEXT_CHARS {
-                    Some(
-                        joined
-                            .chars()
-                            .rev()
-                            .take(MAX_CONTEXT_CHARS)
-                            .collect::<String>()
-                            .chars()
-                            .rev()
-                            .collect(),
-                    )
-                } else {
-                    Some(joined)
-                }
+                Some(joined)
             }
-        } else {
-            None
         };
 
         let description = {
@@ -448,20 +469,51 @@ impl VlmTask {
             is_key_action,
         )?;
 
-        if let Some(sid) = session_id {
-            db.update_activity_session_from_vlm(
-                sid,
-                trace.id,
-                trace.timestamp,
-                Some(description.summary.as_str()),
-                action_description,
-                description.activity_type.as_deref(),
-                &description.entities,
-                is_key_action,
-                description.session_title.as_deref(),
-                description.session_description.as_deref(),
+        // 10. 多线程 Session 路由：优先模型选择，其次 embedding 相似度兜底，否则新建
+        let active_ids: std::collections::HashSet<i64> =
+            active_sessions.iter().map(|s| s.id).collect();
+
+        let mut chosen_session_id = description
+            .existing_session_id
+            .filter(|id| active_ids.contains(id));
+
+        if chosen_session_id.is_none() {
+            let candidates = db.get_active_session_last_embeddings(
+                now_ts,
+                session_config.active_window_ms as i64,
+                session_config.max_active_sessions,
             )?;
+            chosen_session_id = Self::pick_best_session_by_embedding(
+                &embedding,
+                &candidates,
+                session_config.similarity_threshold,
+            );
         }
+
+        let chosen_session_id = match chosen_session_id {
+            Some(id) => id,
+            None => {
+                let seed_app = trace
+                    .app_name
+                    .as_deref()
+                    .or(description.detected_app.as_deref())
+                    .unwrap_or("unknown");
+                db.create_activity_session(seed_app, trace.timestamp)?
+            }
+        };
+
+        db.update_activity_session_from_vlm(
+            chosen_session_id,
+            trace.id,
+            trace.timestamp,
+            Some(description.summary.as_str()),
+            action_description,
+            description.activity_type.as_deref(),
+            &description.entities,
+            is_key_action,
+            description.session_title.as_deref(),
+            description.session_description.as_deref(),
+        )?;
 
         info!(
             "Trace {} processed: summary='{}', confidence={:.2}",
@@ -515,6 +567,57 @@ impl VlmTask {
         }
 
         Some(format!("{}\n{}", header, lines.join("\n")))
+    }
+
+    fn pick_best_session_by_embedding(
+        embedding: &[f32],
+        candidates: &[(i64, Vec<u8>)],
+        threshold: f32,
+    ) -> Option<i64> {
+        let mut best: Option<(i64, f32)> = None;
+        for (sid, bytes) in candidates {
+            let Some(other) = Self::deserialize_embedding(bytes) else {
+                continue;
+            };
+            if other.len() != embedding.len() || other.is_empty() {
+                continue;
+            }
+            let sim = Self::cosine_similarity(embedding, &other);
+            if sim >= threshold {
+                if best.map(|(_, b)| sim > b).unwrap_or(true) {
+                    best = Some((*sid, sim));
+                }
+            }
+        }
+        best.map(|(sid, _)| sid)
+    }
+
+    fn deserialize_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
+        if bytes.len() % 4 != 0 {
+            return None;
+        }
+        let mut v = Vec::with_capacity(bytes.len() / 4);
+        for chunk in bytes.chunks_exact(4) {
+            let arr: [u8; 4] = chunk.try_into().ok()?;
+            v.push(f32::from_le_bytes(arr));
+        }
+        Some(v)
+    }
+
+    fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+        let mut dot = 0.0f32;
+        let mut na = 0.0f32;
+        let mut nb = 0.0f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            dot += x * y;
+            na += x * x;
+            nb += y * y;
+        }
+        if na <= 0.0 || nb <= 0.0 {
+            0.0
+        } else {
+            dot / (na.sqrt() * nb.sqrt())
+        }
     }
 
     /// 加载图片

@@ -41,6 +41,10 @@ pub struct ScreenDescription {
     /// 建议的 Session 描述（可选；如果不需要更新请为 null）
     #[serde(default)]
     pub session_description: Option<String>,
+
+    /// 多线程 Session 路由：如果上下文给出了候选 Session 列表，可返回其中一个 id；否则为 null
+    #[serde(default)]
+    pub existing_session_id: Option<i64>,
 }
 
 /// VLM 引擎配置
@@ -611,7 +615,8 @@ impl VlmEngine {
   "action_description": "如果 is_key_action=true，用一句话客观描述“发生了什么”（不超过80字）；否则为 null",
   "confidence": 0.95,
   "session_title": "可选：如果你认为需要更新 Session 标题则给出（20字以内），否则为 null",
-  "session_description": "可选：如果你认为需要更新 Session 描述则给出（100字以内），否则为 null"
+  "session_description": "可选：如果你认为需要更新 Session 描述则给出（100字以内），否则为 null",
+  "existing_session_id": 123
 }
 ```"#
     }
@@ -643,6 +648,7 @@ impl VlmEngine {
                     confidence: 0.5,
                     session_title: None,
                     session_description: None,
+                    existing_session_id: None,
                 })
             }
         }

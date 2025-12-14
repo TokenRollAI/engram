@@ -9,6 +9,9 @@ interface Settings {
   hot_data_days: number;
   warm_data_days: number;
   summary_interval_min: number;
+  session_active_window_ms: number;
+  session_max_active_sessions: number;
+  session_similarity_threshold: number;
   session_gap_threshold_ms: number;
 }
 
@@ -320,7 +323,7 @@ const Settings: Component = () => {
 
                 <div>
                   <label class="block text-sm text-foreground-secondary mb-1">
-                    Session 断开阈值 (分钟)
+                    Session 冷却阈值 (分钟)
                   </label>
                   <input
                     type="number"
@@ -334,7 +337,66 @@ const Settings: Component = () => {
                     class="w-full px-3 py-2 bg-background border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-accent"
                   />
                   <p class="text-xs text-foreground-secondary mt-1">
-                    同一应用两次活动间隔超过该阈值，会切分为新的活动 Session
+                    多线程 Session：超过该时间未继续推进的线程，会更倾向被视为“已结束”
+                  </p>
+                </div>
+
+                <div>
+                  <label class="block text-sm text-foreground-secondary mb-1">
+                    活跃线程窗口 (分钟)
+                  </label>
+                  <input
+                    type="number"
+                    value={Math.round(settings()!.session_active_window_ms / 60000)}
+                    onInput={(e) => {
+                      const minutes = parseInt(e.currentTarget.value) || 20;
+                      updateSetting("session_active_window_ms", Math.max(60_000, minutes * 60_000));
+                    }}
+                    min={1}
+                    max={240}
+                    class="w-full px-3 py-2 bg-background border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-accent"
+                  />
+                  <p class="text-xs text-foreground-secondary mt-1">
+                    作为“候选线程池”的时间范围（用于路由/上下文）
+                  </p>
+                </div>
+
+                <div>
+                  <label class="block text-sm text-foreground-secondary mb-1">
+                    最大活跃线程数
+                  </label>
+                  <input
+                    type="number"
+                    value={settings()!.session_max_active_sessions}
+                    onInput={(e) =>
+                      updateSetting("session_max_active_sessions", Math.max(1, parseInt(e.currentTarget.value) || 8))
+                    }
+                    min={1}
+                    max={50}
+                    class="w-full px-3 py-2 bg-background border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-accent"
+                  />
+                  <p class="text-xs text-foreground-secondary mt-1">
+                    候选线程过多会稀释上下文，建议 5-12
+                  </p>
+                </div>
+
+                <div>
+                  <label class="block text-sm text-foreground-secondary mb-1">
+                    Session 相似度阈值 (0~1)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={settings()!.session_similarity_threshold}
+                    onInput={(e) =>
+                      updateSetting("session_similarity_threshold", Math.min(1, Math.max(0, parseFloat(e.currentTarget.value) || 0.78)))
+                    }
+                    min={0}
+                    max={1}
+                    class="w-full px-3 py-2 bg-background border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-accent"
+                  />
+                  <p class="text-xs text-foreground-secondary mt-1">
+                    embedding 相似度越高越严格（更容易新开线程）
                   </p>
                 </div>
               </div>

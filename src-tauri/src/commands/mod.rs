@@ -358,6 +358,9 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
         hot_data_days: config.storage.hot_data_days,
         warm_data_days: config.storage.warm_data_days,
         summary_interval_min: config.summary.interval_min,
+        session_active_window_ms: config.session.active_window_ms,
+        session_max_active_sessions: config.session.max_active_sessions,
+        session_similarity_threshold: config.session.similarity_threshold,
         session_gap_threshold_ms: config.session.gap_threshold_ms,
     })
 }
@@ -374,6 +377,9 @@ pub async fn update_settings(state: State<'_, AppState>, settings: Settings) -> 
     config.storage.hot_data_days = settings.hot_data_days;
     config.storage.warm_data_days = settings.warm_data_days;
     config.summary.interval_min = settings.summary_interval_min;
+    config.session.active_window_ms = settings.session_active_window_ms;
+    config.session.max_active_sessions = settings.session_max_active_sessions;
+    config.session.similarity_threshold = settings.session_similarity_threshold;
     config.session.gap_threshold_ms = settings.session_gap_threshold_ms;
 
     config.save().map_err(|e| e.to_string())?;

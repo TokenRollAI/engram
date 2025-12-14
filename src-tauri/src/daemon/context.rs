@@ -47,7 +47,7 @@ impl WindowWatcher {
     #[cfg(target_os = "linux")]
     fn get_linux_focus_context() -> FocusContext {
         use x11rb::connection::Connection;
-        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, GetPropertyReply, Window};
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, Window};
 
         debug!("Getting Linux focus context via X11");
 
@@ -305,11 +305,11 @@ impl WindowWatcher {
         }
 
         // 回退: 检查窗口大小是否匹配屏幕大小
-        if let (Ok(geom), Ok(screen_cookie)) = (
-            conn.get_geometry(window).and_then(|c| c.reply()),
-            conn.get_geometry(root).and_then(|c| c.reply()),
+        if let (Some(geom), Some(screen_geom)) = (
+            conn.get_geometry(window).ok().and_then(|c| c.reply().ok()),
+            conn.get_geometry(root).ok().and_then(|c| c.reply().ok()),
         ) {
-            return geom.width == screen_cookie.width && geom.height == screen_cookie.height;
+            return geom.width == screen_geom.width && geom.height == screen_geom.height;
         }
 
         false

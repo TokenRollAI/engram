@@ -198,6 +198,9 @@ interface Settings {
   hot_data_days: number
   warm_data_days: number
   summary_interval_min: number
+  session_active_window_ms: number
+  session_max_active_sessions: number
+  session_similarity_threshold: number
   session_gap_threshold_ms: number
 }
 

@@ -177,6 +177,9 @@ pub struct Settings {
     pub hot_data_days: u32,
     pub warm_data_days: u32,
     pub summary_interval_min: u32,
+    pub session_active_window_ms: u64,
+    pub session_max_active_sessions: u32,
+    pub session_similarity_threshold: f32,
     pub session_gap_threshold_ms: u64,
 }
 
@@ -189,6 +192,9 @@ impl Default for Settings {
             hot_data_days: 7,
             warm_data_days: 30,
             summary_interval_min: 15,
+            session_active_window_ms: 20 * 60 * 1000,
+            session_max_active_sessions: 8,
+            session_similarity_threshold: 0.78,
             session_gap_threshold_ms: 300000,
         }
     }

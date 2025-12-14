@@ -81,9 +81,33 @@ impl Default for StorageConfig {
 /// 会话管理配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
-    /// 会话分割阈值（毫秒）- 超过此时间间隔则开启新会话
+    /// 活跃线程窗口（毫秒）- 用于多线程 Session 路由/聚类
+    #[serde(default = "default_session_active_window_ms")]
+    pub active_window_ms: u64,
+
+    /// 最大活跃 Session 数（用于构建上下文与路由候选）
+    #[serde(default = "default_session_max_active")]
+    pub max_active_sessions: u32,
+
+    /// embedding 相似度阈值（0-1），用于把 trace 归入既有 Session
+    #[serde(default = "default_session_similarity_threshold")]
+    pub similarity_threshold: f32,
+
+    /// 会话分割阈值（毫秒）- 超过此时间间隔则偏向开启新会话
     #[serde(default = "default_session_gap")]
     pub gap_threshold_ms: u64,
+}
+
+fn default_session_active_window_ms() -> u64 {
+    20 * 60 * 1000 // 20 分钟
+}
+
+fn default_session_max_active() -> u32 {
+    8
+}
+
+fn default_session_similarity_threshold() -> f32 {
+    0.78
 }
 
 fn default_session_gap() -> u64 {
@@ -93,6 +117,9 @@ fn default_session_gap() -> u64 {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
+            active_window_ms: default_session_active_window_ms(),
+            max_active_sessions: default_session_max_active(),
+            similarity_threshold: default_session_similarity_threshold(),
             gap_threshold_ms: default_session_gap(),
         }
     }

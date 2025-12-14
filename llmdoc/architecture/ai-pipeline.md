@@ -203,7 +203,7 @@ Input: Trace { id, image_path, ocr_text=NULL, ... }
   │      image = image::open(path).to_rgb8()
   │
   ├─► 2. 调用 VLM 分析（带上下文）
-  │      context = session.context_text + recent_traces(1-2)
+  │      context = Active Sessions（Threads）列表 + 最近 traces（OCR）
   │      desc = vlm_engine.analyze_screen_with_context(&image, context).await?
   │      返回 ScreenDescription {
   │        summary: String,
@@ -215,6 +215,7 @@ Input: Trace { id, image_path, ocr_text=NULL, ... }
   │        action_description: Option<String>,
   │        session_title: Option<String>,
   │        session_description: Option<String>,
+  │        existing_session_id: Option<i64>,
   │        confidence: f32,
   │      }
   │

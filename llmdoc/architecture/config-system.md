@@ -108,7 +108,10 @@ pub struct AppConfig {
 
 ### SessionConfig（会话配置）
 
-- `gap_threshold_ms` (u64): 会话分割阈值，超过此时间间隔则开启新会话（默认 300000 = 5 分钟）
+- `active_window_ms` (u64): 活跃线程窗口，用于多线程 Session 路由/聚类（默认 20 分钟）
+- `max_active_sessions` (u32): 最大活跃 Session 数（用于构建上下文与路由候选，默认 8）
+- `similarity_threshold` (f32): embedding 相似度阈值（0-1），用于把 trace 归入既有 Session（默认 0.78）
+- `gap_threshold_ms` (u64): Session 冷却阈值（超过该时间未继续推进的线程更倾向被视为结束，默认 300000 = 5 分钟）
 
 **来源**: `src-tauri/src/config/mod.rs:81-99`
 
@@ -158,6 +161,9 @@ hot_data_days = 7
 warm_data_days = 30
 
 [session]
+active_window_ms = 1200000  # 20 分钟
+max_active_sessions = 8
+similarity_threshold = 0.78
 gap_threshold_ms = 300000  # 5 分钟
 
 [summary]
