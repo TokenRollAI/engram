@@ -1,0 +1,45 @@
+# Rust
+/target/
+Cargo.lock
+*.rs.bk
+
+# Tauri
+/src-tauri/target/
+
+# Node
+node_modules/
+dist/
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Engram data (user data)
+.engram/
+
+# Test coverage
+coverage/
+*.lcov

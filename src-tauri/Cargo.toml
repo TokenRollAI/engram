@@ -1,0 +1,67 @@
+[package]
+name = "engram"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first semantic memory augmentation system"
+authors = ["Engram Team"]
+license = "MIT"
+repository = "https://github.com/TokenRollAI/engram"
+
+[lib]
+name = "engram_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.1", features = [] }
+
+[dependencies]
+# Tauri 核心
+tauri = { version = "2.1", features = ["tray-icon"] }
+tauri-plugin-shell = "2.1"
+
+# 异步运行时
+tokio = { version = "1.42", features = ["full", "sync"] }
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 数据库
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+
+# 图像处理
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+] }
+
+# 错误处理
+anyhow = "1.0"
+thiserror = "2.0"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 时间处理
+chrono = { version = "0.4", features = ["serde"] }
+
+# 路径处理
+directories = "6.0.0"
+
+# UUID
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# 屏幕捕获 (跨平台)
+xcap = "0.7.1"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
