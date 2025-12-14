@@ -32,6 +32,10 @@ serde_json = "1.0"
 # 数据库
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 
+# 向量搜索扩展
+sqlite-vec = "0.1"
+zerocopy = { version = "0.8", features = ["derive"] }
+
 # 图像处理
 image = { version = "0.25", default-features = false, features = [
     "png",

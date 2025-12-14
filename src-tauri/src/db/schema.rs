@@ -51,6 +51,17 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
+    // 创建 vec0 向量索引表（sqlite-vec）
+    // 使用 384 维向量（all-MiniLM-L6-v2 模型输出）
+    conn.execute_batch(
+        r#"
+        CREATE VIRTUAL TABLE IF NOT EXISTS traces_vec USING vec0(
+            trace_id INTEGER PRIMARY KEY,
+            embedding FLOAT[384]
+        );
+        "#,
+    )?;
+
     // 创建同步触发器
     conn.execute_batch(
         r#"

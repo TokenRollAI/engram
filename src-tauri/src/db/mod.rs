@@ -1,6 +1,7 @@
 //! 数据库模块
 //!
 //! 使用 SQLite 存储痕迹数据、摘要和设置。
+//! 使用 sqlite-vec 扩展进行向量搜索。
 
 pub mod models;
 mod schema;
@@ -25,6 +26,13 @@ pub struct Database {
 impl Database {
     /// 创建或打开数据库
     pub fn new() -> Result<Self> {
+        // 注册 sqlite-vec 扩展（必须在打开任何连接之前）
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+
         let data_dir = Self::resolve_data_dir()?;
         fs::create_dir_all(&data_dir)?;
 
@@ -32,6 +40,10 @@ impl Database {
         info!("Opening database at: {:?}", db_path);
 
         let conn = Connection::open(&db_path)?;
+
+        // 验证 sqlite-vec 是否加载成功
+        let vec_version: String = conn.query_row("SELECT vec_version()", [], |row| row.get(0))?;
+        info!("sqlite-vec extension loaded: v{}", vec_version);
 
         // 初始化 Schema
         schema::init_schema(&conn)?;
@@ -362,10 +374,21 @@ impl Database {
     /// 更新 trace 的向量嵌入
     pub fn update_trace_embedding(&self, trace_id: i64, embedding: &[u8]) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+
+        // 更新 traces 表的 embedding 列（保留原有 BLOB 存储）
         conn.execute(
             "UPDATE traces SET embedding = ?1 WHERE id = ?2",
             rusqlite::params![embedding, trace_id],
         )?;
+
+        // 同时插入到 vec0 向量索引表
+        // embedding 是 f32 数组的字节表示，直接传递给 sqlite-vec
+        conn.execute(
+            "INSERT OR REPLACE INTO traces_vec (trace_id, embedding) VALUES (?1, ?2)",
+            rusqlite::params![trace_id, embedding],
+        )?;
+
+        debug!("Updated embedding for trace {} (vec index synced)", trace_id);
         Ok(())
     }
 
@@ -449,21 +472,39 @@ impl Database {
         Ok(result)
     }
 
-    /// 向量相似度搜索（暴力搜索，适用于小数据集）
+    /// 向量相似度搜索（使用 sqlite-vec KNN 搜索）
     pub fn search_by_embedding(&self, query_embedding: &[f32], limit: u32) -> Result<Vec<(Trace, f32)>> {
         let conn = self.conn.lock().unwrap();
+
+        // 将查询向量转换为字节数组（sqlite-vec 接受的格式）
+        let query_bytes: Vec<u8> = query_embedding
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+
+        // 使用 sqlite-vec 的 KNN 搜索
+        // vec0 表通过 MATCH 子句进行相似度搜索，返回 distance（距离越小越相似）
         let mut stmt = conn.prepare(
             r#"
-            SELECT id, timestamp, image_path, app_name, window_title,
-                   is_fullscreen, window_x, window_y, window_w, window_h,
-                   is_idle, ocr_text, created_at, embedding
-            FROM traces
-            WHERE embedding IS NOT NULL
+            SELECT
+                t.id, t.timestamp, t.image_path, t.app_name, t.window_title,
+                t.is_fullscreen, t.window_x, t.window_y, t.window_w, t.window_h,
+                t.is_idle, t.ocr_text, t.created_at,
+                v.distance
+            FROM traces_vec v
+            INNER JOIN traces t ON v.trace_id = t.id
+            WHERE v.embedding MATCH ?1
+                AND k = ?2
+            ORDER BY v.distance
             "#,
         )?;
 
-        let traces = stmt.query_map([], |row| {
-            let embedding_bytes: Vec<u8> = row.get(13)?;
+        let traces = stmt.query_map(rusqlite::params![query_bytes, limit], |row| {
+            let distance: f32 = row.get(13)?;
+            // 将距离转换为相似度（距离越小，相似度越高）
+            // 使用 1 / (1 + distance) 转换
+            let similarity = 1.0 / (1.0 + distance);
+
             Ok((
                 Trace {
                     id: row.get(0)?,
@@ -480,24 +521,18 @@ impl Database {
                     ocr_text: row.get(11)?,
                     created_at: row.get(12)?,
                 },
-                embedding_bytes,
+                similarity,
             ))
         })?;
 
-        // 计算相似度并排序
-        let mut results: Vec<(Trace, f32)> = Vec::new();
+        let mut results = Vec::new();
         for trace_result in traces {
-            if let Ok((trace, embedding_bytes)) = trace_result {
-                let embedding = Self::deserialize_embedding(&embedding_bytes);
-                let similarity = Self::cosine_similarity(query_embedding, &embedding);
+            if let Ok((trace, similarity)) = trace_result {
                 results.push((trace, similarity));
             }
         }
 
-        // 按相似度降序排序
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        results.truncate(limit as usize);
-
+        debug!("sqlite-vec KNN search returned {} results", results.len());
         Ok(results)
     }
 
