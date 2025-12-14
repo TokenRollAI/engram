@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 pub use ai::{VlmEngine, ScreenDescription, TextEmbedder};
-pub use daemon::{EngramDaemon, VlmTask, VlmTaskConfig};
+pub use daemon::{EngramDaemon, VlmTask, VlmTaskConfig, SummarizerTask, SummarizerTaskConfig};
 pub use db::Database;
 
 /// 应用全局状态
@@ -27,6 +27,8 @@ pub struct AppState {
     pub embedder: Arc<RwLock<TextEmbedder>>,
     /// VLM 分析后台任务
     pub vlm_task: Arc<RwLock<VlmTask>>,
+    /// 摘要生成后台任务
+    pub summarizer_task: Arc<RwLock<SummarizerTask>>,
 }
 
 impl AppState {
@@ -45,7 +47,13 @@ impl AppState {
             VlmTaskConfig::default(),
         )));
 
-        let state = Self { db, daemon, vlm, embedder, vlm_task };
+        // 创建摘要任务（默认启用）
+        let summarizer_task = Arc::new(RwLock::new(SummarizerTask::new(
+            db.clone(),
+            SummarizerTaskConfig::default(),
+        )));
+
+        let state = Self { db, daemon, vlm, embedder, vlm_task, summarizer_task };
 
         // 检查是否有保存的 AI 配置，如果有则自动初始化
         state.try_auto_initialize_ai().await;
@@ -104,10 +112,14 @@ impl AppState {
                 }
             }
 
-            // 如果 VLM 初始化成功，启动 VLM 分析任务
+            // 如果 VLM 初始化成功，启动 VLM 分析任务和摘要任务
             if vlm_initialized {
                 if let Err(e) = self.start_vlm_task().await {
                     warn!("Failed to start VLM task: {}", e);
+                }
+                // 启动摘要任务（使用相同的 LLM 端点）
+                if let Err(e) = self.start_summarizer_task_with_config(vlm_config).await {
+                    warn!("Failed to start summarizer task: {}", e);
                 }
             }
         } else {
@@ -147,9 +159,13 @@ impl AppState {
             }
         }
 
-        // 如果 VLM 初始化成功，启动 VLM 分析任务
+        // 如果 VLM 初始化成功，启动 VLM 分析任务和摘要任务
         if vlm_initialized {
             self.start_vlm_task().await?;
+            // 启动摘要任务（使用默认配置）
+            if let Err(e) = self.start_summarizer_task().await {
+                warn!("Failed to start summarizer task: {}", e);
+            }
         }
 
         Ok(())
@@ -191,6 +207,62 @@ impl AppState {
         }
 
         Ok(())
+    }
+
+    /// 启动摘要任务
+    pub async fn start_summarizer_task(&self) -> anyhow::Result<()> {
+        let mut task = self.summarizer_task.write().await;
+        task.start().await
+    }
+
+    /// 使用 VLM 配置启动摘要任务
+    pub async fn start_summarizer_task_with_config(&self, vlm_config: ai::VlmConfig) -> anyhow::Result<()> {
+        // 从 VLM 配置创建 Summarizer 配置（复用 endpoint 和 api_key）
+        let summarizer_config = ai::SummarizerConfig {
+            endpoint: vlm_config.endpoint,
+            // 对于纯文本摘要，使用更小的模型（如果 VLM 是视觉模型则需要替换）
+            model: if vlm_config.model.contains("vl") || vlm_config.model.contains("vision") {
+                // 视觉模型，尝试使用对应的文本模型
+                vlm_config.model.replace("-vl", "").replace("vl:", ":").replace("-vision", "")
+            } else {
+                vlm_config.model
+            },
+            api_key: vlm_config.api_key,
+            max_tokens: 1024,
+            temperature: 0.3,
+        };
+
+        // 创建新的摘要任务配置
+        let task_config = SummarizerTaskConfig {
+            interval_ms: 15 * 60 * 1000, // 15 分钟
+            llm_config: summarizer_config,
+            enabled: true,
+        };
+
+        // 停止旧任务
+        {
+            let mut task = self.summarizer_task.write().await;
+            task.stop();
+        }
+
+        // 创建新任务
+        let new_task = SummarizerTask::new(self.db.clone(), task_config);
+
+        // 替换并启动
+        {
+            let mut task = self.summarizer_task.write().await;
+            *task = new_task;
+            task.start().await?;
+        }
+
+        info!("Summarizer task started (interval: 15 min)");
+        Ok(())
+    }
+
+    /// 停止摘要任务
+    pub async fn stop_summarizer_task(&self) {
+        let mut task = self.summarizer_task.write().await;
+        task.stop();
     }
 
     /// 检查 VLM 是否可用
