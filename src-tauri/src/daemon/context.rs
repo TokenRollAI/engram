@@ -305,9 +305,93 @@ impl WindowWatcher {
 
     #[cfg(target_os = "windows")]
     fn get_windows_focus_context() -> FocusContext {
-        // TODO: 使用 Windows API 获取窗口信息
-        debug!("Getting Windows focus context (not implemented)");
-        FocusContext::default()
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+            GetWindowRect, IsZoomed,
+        };
+        use windows::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        use windows::core::PWSTR;
+
+        debug!("Getting Windows focus context");
+
+        unsafe {
+            // 获取前台窗口句柄
+            let hwnd: HWND = GetForegroundWindow();
+            if hwnd.0.is_null() {
+                debug!("No foreground window");
+                return FocusContext::default();
+            }
+
+            // 获取窗口标题
+            let mut title_buf = [0u16; 512];
+            let title_len = GetWindowTextW(hwnd, &mut title_buf);
+            let window_title = if title_len > 0 {
+                Some(String::from_utf16_lossy(&title_buf[..title_len as usize]))
+            } else {
+                None
+            };
+
+            // 获取进程 ID
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+
+            // 获取进程名称（应用名称）
+            let app_name = if pid != 0 {
+                if let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                    let mut name_buf = [0u16; 260];
+                    let mut size = name_buf.len() as u32;
+                    let pwstr = PWSTR(name_buf.as_mut_ptr());
+
+                    if QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, pwstr, &mut size).is_ok() {
+                        let full_path = String::from_utf16_lossy(&name_buf[..size as usize]);
+                        // 提取文件名
+                        full_path
+                            .rsplit('\\')
+                            .next()
+                            .map(|s| s.trim_end_matches(".exe").to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // 获取窗口位置和大小
+            let mut rect = windows::Win32::Foundation::RECT::default();
+            let bounds = if GetWindowRect(hwnd, &mut rect).is_ok() {
+                Some((
+                    rect.left,
+                    rect.top,
+                    (rect.right - rect.left) as u32,
+                    (rect.bottom - rect.top) as u32,
+                ))
+            } else {
+                None
+            };
+
+            // 检测是否最大化（近似全屏）
+            let is_fullscreen = IsZoomed(hwnd).as_bool();
+
+            debug!(
+                "Focus context: app={:?}, title={:?}, pid={}, bounds={:?}, fullscreen={}",
+                app_name, window_title, pid, bounds, is_fullscreen
+            );
+
+            FocusContext {
+                app_name,
+                window_title,
+                is_fullscreen,
+                bounds,
+                pid: if pid != 0 { Some(pid) } else { None },
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]
