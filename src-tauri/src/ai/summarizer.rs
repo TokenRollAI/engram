@@ -163,7 +163,11 @@ impl Summarizer {
     pub async fn auto_detect() -> Result<Self> {
         let endpoints = [
             ("http://127.0.0.1:11434/v1", "qwen2.5:7b", "Ollama"),
-            ("http://127.0.0.1:8000/v1", "Qwen/Qwen2.5-7B-Instruct", "vLLM"),
+            (
+                "http://127.0.0.1:8000/v1",
+                "Qwen/Qwen2.5-7B-Instruct",
+                "vLLM",
+            ),
             ("http://127.0.0.1:1234/v1", "local-model", "LM Studio"),
         ];
 
@@ -283,7 +287,11 @@ impl Summarizer {
         for trace in traces.iter().take(50) {
             // 限制上下文大小
             let time = chrono::DateTime::from_timestamp_millis(trace.timestamp)
-                .map(|t| t.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
+                .map(|t| {
+                    t.with_timezone(&chrono::Local)
+                        .format("%H:%M:%S")
+                        .to_string()
+                })
                 .unwrap_or_default();
 
             let app = trace.app_name.as_deref().unwrap_or("Unknown");

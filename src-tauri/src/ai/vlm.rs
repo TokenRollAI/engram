@@ -494,7 +494,9 @@ impl VlmEngine {
             }],
             "max_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
-            "response_format": "json_object"
+            "response_format": {
+                "type": "json_object"
+            }
         });
 
         let url = format!("{}/chat/completions", self.config.endpoint);

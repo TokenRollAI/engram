@@ -5,15 +5,8 @@
 use crate::ai::{EmbeddingConfig, VlmConfig};
 use crate::daemon::{DaemonStatus, VlmTaskConfig};
 use crate::db::models::{
-    ActivitySession,
-    ActivitySessionEvent,
-    ChatMessage,
-    Entity,
-    SearchResult,
-    Settings,
-    StorageStats,
-    Summary,
-    Trace,
+    ActivitySession, ActivitySessionEvent, ChatMessage, Entity, SearchResult, Settings,
+    StorageStats, Summary, Trace,
 };
 use crate::AppState;
 use serde::Serialize;
@@ -58,7 +51,8 @@ pub async fn toggle_capture(state: State<'_, AppState>, paused: bool) -> Result<
 #[tauri::command]
 pub async fn capture_now(state: State<'_, AppState>) -> Result<(), String> {
     info!("Manual capture requested");
-    // TODO: 实现立即截图
+    let daemon = state.daemon.read().await;
+    daemon.capture_now().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -78,7 +72,12 @@ pub async fn get_traces(
 
     state
         .db
-        .get_traces(start_time, end_time, limit.unwrap_or(100), offset.unwrap_or(0))
+        .get_traces(
+            start_time,
+            end_time,
+            limit.unwrap_or(100),
+            offset.unwrap_or(0),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -248,7 +247,13 @@ pub async fn search_traces(
                         .hybrid_search(&query, Some(&query_embedding), limit)
                         .map_err(|e| e.to_string())?;
 
-                    hybrid_results
+                    let filtered = apply_trace_filters(
+                        hybrid_results,
+                        start_time,
+                        end_time,
+                        app_filter.as_ref(),
+                    );
+                    filtered
                         .into_iter()
                         .map(|(trace, score)| SearchResult {
                             trace,
@@ -260,16 +265,37 @@ pub async fn search_traces(
                 Err(e) => {
                     warn!("Failed to embed query: {}", e);
                     // 回退到 FTS
-                    fallback_fts_search(&state.db, &query, limit)?
+                    fallback_fts_search(
+                        &state.db,
+                        &query,
+                        limit,
+                        start_time,
+                        end_time,
+                        app_filter.as_ref(),
+                    )?
                 }
             }
         } else {
             warn!("Embedder not initialized, falling back to FTS");
-            fallback_fts_search(&state.db, &query, limit)?
+            fallback_fts_search(
+                &state.db,
+                &query,
+                limit,
+                start_time,
+                end_time,
+                app_filter.as_ref(),
+            )?
         }
     } else {
         // 关键词搜索模式
-        fallback_fts_search(&state.db, &query, limit)?
+        fallback_fts_search(
+            &state.db,
+            &query,
+            limit,
+            start_time,
+            end_time,
+            app_filter.as_ref(),
+        )?
     };
 
     Ok(results)
@@ -280,20 +306,62 @@ fn fallback_fts_search(
     db: &crate::db::Database,
     query: &str,
     limit: u32,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    app_filter: Option<&Vec<String>>,
 ) -> Result<Vec<SearchResult>, String> {
     let traces = db.search_text(query, limit).map_err(|e| e.to_string())?;
 
-    let results: Vec<SearchResult> = traces
+    let filtered = apply_trace_filters(
+        traces.into_iter().map(|t| (t, 1.0)).collect(),
+        start_time,
+        end_time,
+        app_filter,
+    );
+
+    let results: Vec<SearchResult> = filtered
         .into_iter()
         .enumerate()
-        .map(|(i, trace)| SearchResult {
+        .map(|(i, (trace, score))| SearchResult {
             trace,
-            score: 1.0 - (i as f32 * 0.1).min(0.9),
+            score: (score - (i as f32 * 0.02)).max(0.1),
             highlights: vec![],
         })
         .collect();
 
     Ok(results)
+}
+
+fn apply_trace_filters(
+    items: Vec<(Trace, f32)>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    app_filter: Option<&Vec<String>>,
+) -> Vec<(Trace, f32)> {
+    items
+        .into_iter()
+        .filter(|(t, _)| {
+            if let Some(s) = start_time {
+                if t.timestamp < s {
+                    return false;
+                }
+            }
+            if let Some(e) = end_time {
+                if t.timestamp > e {
+                    return false;
+                }
+            }
+            if let Some(apps) = app_filter {
+                if !apps.is_empty() {
+                    let name = t.app_name.as_deref().unwrap_or("");
+                    if !apps.iter().any(|a| a == name) {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .collect()
 }
 
 /// 获取设置
@@ -330,15 +398,15 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
 
 /// 更新设置
 #[tauri::command]
-pub async fn update_settings(
-    state: State<'_, AppState>,
-    settings: Settings,
-) -> Result<(), String> {
+pub async fn update_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
     info!("update_settings: {:?}", settings);
 
     state
         .db
-        .set_setting("capture_interval_ms", &settings.capture_interval_ms.to_string())
+        .set_setting(
+            "capture_interval_ms",
+            &settings.capture_interval_ms.to_string(),
+        )
         .map_err(|e| e.to_string())?;
     state
         .db
@@ -346,7 +414,10 @@ pub async fn update_settings(
         .map_err(|e| e.to_string())?;
     state
         .db
-        .set_setting("similarity_threshold", &settings.similarity_threshold.to_string())
+        .set_setting(
+            "similarity_threshold",
+            &settings.similarity_threshold.to_string(),
+        )
         .map_err(|e| e.to_string())?;
     state
         .db
@@ -358,7 +429,10 @@ pub async fn update_settings(
         .map_err(|e| e.to_string())?;
     state
         .db
-        .set_setting("summary_interval_min", &settings.summary_interval_min.to_string())
+        .set_setting(
+            "summary_interval_min",
+            &settings.summary_interval_min.to_string(),
+        )
         .map_err(|e| e.to_string())?;
     state
         .db
@@ -454,30 +528,80 @@ pub async fn get_ai_config(state: State<'_, AppState>) -> Result<AiConfig, Strin
 
 /// 更新 AI 配置
 #[tauri::command]
-pub async fn update_ai_config(
-    state: State<'_, AppState>,
-    config: AiConfig,
-) -> Result<(), String> {
-    info!("update_ai_config: vlm.endpoint={}, embedding.endpoint={:?}, vlm_task.concurrency={}",
-          config.vlm.endpoint, config.embedding.endpoint, config.vlm_task.concurrency);
+pub async fn update_ai_config(state: State<'_, AppState>, config: AiConfig) -> Result<(), String> {
+    info!(
+        "update_ai_config: vlm.endpoint={}, embedding.endpoint={:?}, vlm_task.concurrency={}",
+        config.vlm.endpoint, config.embedding.endpoint, config.vlm_task.concurrency
+    );
 
     // 保存 VLM 配置到数据库
-    state.db.set_setting("vlm_endpoint", &config.vlm.endpoint).map_err(|e| e.to_string())?;
-    state.db.set_setting("vlm_model", &config.vlm.model).map_err(|e| e.to_string())?;
-    state.db.set_setting("vlm_api_key", config.vlm.api_key.as_deref().unwrap_or("")).map_err(|e| e.to_string())?;
-    state.db.set_setting("vlm_max_tokens", &config.vlm.max_tokens.to_string()).map_err(|e| e.to_string())?;
-    state.db.set_setting("vlm_temperature", &config.vlm.temperature.to_string()).map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("vlm_endpoint", &config.vlm.endpoint)
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("vlm_model", &config.vlm.model)
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("vlm_api_key", config.vlm.api_key.as_deref().unwrap_or(""))
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("vlm_max_tokens", &config.vlm.max_tokens.to_string())
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("vlm_temperature", &config.vlm.temperature.to_string())
+        .map_err(|e| e.to_string())?;
 
     // 保存 Embedding 配置到数据库
-    state.db.set_setting("embedding_endpoint", config.embedding.endpoint.as_deref().unwrap_or("")).map_err(|e| e.to_string())?;
-    state.db.set_setting("embedding_model", &config.embedding.model).map_err(|e| e.to_string())?;
-    state.db.set_setting("embedding_api_key", config.embedding.api_key.as_deref().unwrap_or("")).map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting(
+            "embedding_endpoint",
+            config.embedding.endpoint.as_deref().unwrap_or(""),
+        )
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("embedding_model", &config.embedding.model)
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting(
+            "embedding_api_key",
+            config.embedding.api_key.as_deref().unwrap_or(""),
+        )
+        .map_err(|e| e.to_string())?;
 
     // 保存 VLM 任务配置到数据库
-    state.db.set_setting("vlm_task_interval_ms", &config.vlm_task.interval_ms.to_string()).map_err(|e| e.to_string())?;
-    state.db.set_setting("vlm_task_batch_size", &config.vlm_task.batch_size.to_string()).map_err(|e| e.to_string())?;
-    state.db.set_setting("vlm_task_concurrency", &config.vlm_task.concurrency.to_string()).map_err(|e| e.to_string())?;
-    state.db.set_setting("vlm_task_enabled", &config.vlm_task.enabled.to_string()).map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting(
+            "vlm_task_interval_ms",
+            &config.vlm_task.interval_ms.to_string(),
+        )
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting(
+            "vlm_task_batch_size",
+            &config.vlm_task.batch_size.to_string(),
+        )
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting(
+            "vlm_task_concurrency",
+            &config.vlm_task.concurrency.to_string(),
+        )
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("vlm_task_enabled", &config.vlm_task.enabled.to_string())
+        .map_err(|e| e.to_string())?;
 
     // 重新初始化 AI 模块
     reinitialize_ai(&state, &config).await?;
@@ -598,7 +722,10 @@ async fn reinitialize_ai(state: &State<'_, AppState>, config: &AiConfig) -> Resu
         if let Err(e) = state.restart_vlm_task(config.vlm_task.clone()).await {
             warn!("Failed to restart VLM task: {}", e);
         } else {
-            info!("VLM task restarted with new config (concurrency: {})", config.vlm_task.concurrency);
+            info!(
+                "VLM task restarted with new config (concurrency: {})",
+                config.vlm_task.concurrency
+            );
         }
     }
 
@@ -707,7 +834,10 @@ pub async fn get_traces_by_entity(
     entity_id: i64,
     limit: Option<u32>,
 ) -> Result<Vec<Trace>, String> {
-    debug!("get_traces_by_entity: entity_id={}, limit={:?}", entity_id, limit);
+    debug!(
+        "get_traces_by_entity: entity_id={}, limit={:?}",
+        entity_id, limit
+    );
     state
         .db
         .get_traces_by_entity(entity_id, limit.unwrap_or(50))
@@ -787,7 +917,7 @@ pub async fn chat_with_memory(
     let (start_time, end_time) = match (request.start_time, request.end_time) {
         (Some(s), Some(e)) => (s, e),
         (Some(s), None) => (s, now),
-        (None, Some(e)) => (e - day_ms, e), // 默认向前24小时
+        (None, Some(e)) => (e - day_ms, e),  // 默认向前24小时
         (None, None) => (now - day_ms, now), // 默认最近24小时
     };
 
@@ -805,7 +935,8 @@ pub async fn chat_with_memory(
 
     if sessions.is_empty() && recent_traces.is_empty() {
         return Ok(ChatResponse {
-            content: "在指定的时间范围内没有找到相关的屏幕记录。请尝试扩大时间范围或选择其他应用。".to_string(),
+            content: "在指定的时间范围内没有找到相关的屏幕记录。请尝试扩大时间范围或选择其他应用。"
+                .to_string(),
             context_count: 0,
             time_range: Some(format_time_range(start_time, end_time)),
             thread_id: request.thread_id.unwrap_or(0),
@@ -907,7 +1038,10 @@ pub async fn get_available_apps(
 }
 
 /// 构建 chat 上下文
-fn build_chat_context_from_sessions(sessions: &[ActivitySession], recent_traces: &[Trace]) -> String {
+fn build_chat_context_from_sessions(
+    sessions: &[ActivitySession],
+    recent_traces: &[Trace],
+) -> String {
     let mut context = String::new();
 
     // Sessions（尽量按时间正序，便于 LLM 理解）
@@ -916,16 +1050,30 @@ fn build_chat_context_from_sessions(sessions: &[ActivitySession], recent_traces:
 
     for session in sessions_sorted.iter().take(20) {
         let start = chrono::DateTime::from_timestamp_millis(session.start_time)
-            .map(|t| t.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string())
+            .map(|t| {
+                t.with_timezone(&chrono::Local)
+                    .format("%m-%d %H:%M")
+                    .to_string()
+            })
             .unwrap_or_default();
         let end = chrono::DateTime::from_timestamp_millis(session.end_time)
             .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
             .unwrap_or_default();
 
-        context.push_str(&format!("[Session {}-{}] {}\n", start, end, session.app_name));
+        context.push_str(&format!(
+            "[Session {}-{}] {}\n",
+            start, end, session.app_name
+        ));
 
         if let Some(ctx) = &session.context_text {
-            let text: String = ctx.chars().rev().take(800).collect::<String>().chars().rev().collect();
+            let text: String = ctx
+                .chars()
+                .rev()
+                .take(800)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
             if !text.trim().is_empty() {
                 context.push_str(&format!("  结论: {}\n", text.trim()));
             }
@@ -943,7 +1091,11 @@ fn build_chat_context_from_sessions(sessions: &[ActivitySession], recent_traces:
         context.push_str("【最近截图细节（OCR）】\n");
         for trace in recent_traces.iter().take(2) {
             let time = chrono::DateTime::from_timestamp_millis(trace.timestamp)
-                .map(|t| t.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string())
+                .map(|t| {
+                    t.with_timezone(&chrono::Local)
+                        .format("%m-%d %H:%M")
+                        .to_string()
+                })
                 .unwrap_or_default();
             let app = trace.app_name.as_deref().unwrap_or("未知应用");
 
@@ -964,10 +1116,18 @@ fn build_chat_context_from_sessions(sessions: &[ActivitySession], recent_traces:
 /// 格式化时间范围描述（毫秒时间戳，使用本地时区）
 fn format_time_range(start: i64, end: i64) -> String {
     let start_dt = chrono::DateTime::from_timestamp_millis(start)
-        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
         .unwrap_or_default();
     let end_dt = chrono::DateTime::from_timestamp_millis(end)
-        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
         .unwrap_or_default();
 
     format!("{} 至 {}", start_dt, end_dt)
@@ -1009,5 +1169,12 @@ pub async fn trigger_summary(
         .await
         .map_err(|e| format!("生成摘要失败: {}", e))?;
 
-    Ok(format!("{}摘要生成成功", if summary_type == "daily" { "每日" } else { "15分钟" }))
+    Ok(format!(
+        "{}摘要生成成功",
+        if summary_type == "daily" {
+            "每日"
+        } else {
+            "15分钟"
+        }
+    ))
 }

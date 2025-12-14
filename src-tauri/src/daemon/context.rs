@@ -47,9 +47,7 @@ impl WindowWatcher {
     #[cfg(target_os = "linux")]
     fn get_linux_focus_context() -> FocusContext {
         use x11rb::connection::Connection;
-        use x11rb::protocol::xproto::{
-            AtomEnum, ConnectionExt, GetPropertyReply, Window,
-        };
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, GetPropertyReply, Window};
 
         debug!("Getting Linux focus context via X11");
 
@@ -118,39 +116,49 @@ impl WindowWatcher {
         };
 
         // 获取当前活动窗口
-        let active_window: Window = match conn.get_property(false, root, active_window_atom, AtomEnum::WINDOW, 0, 1) {
-            Ok(cookie) => match cookie.reply() {
-                Ok(reply) => {
-                    if reply.value.len() >= 4 {
-                        u32::from_ne_bytes([
-                            reply.value[0],
-                            reply.value[1],
-                            reply.value[2],
-                            reply.value[3],
-                        ])
-                    } else {
-                        return FocusContext::default();
+        let active_window: Window =
+            match conn.get_property(false, root, active_window_atom, AtomEnum::WINDOW, 0, 1) {
+                Ok(cookie) => match cookie.reply() {
+                    Ok(reply) => {
+                        if reply.value.len() >= 4 {
+                            u32::from_ne_bytes([
+                                reply.value[0],
+                                reply.value[1],
+                                reply.value[2],
+                                reply.value[3],
+                            ])
+                        } else {
+                            return FocusContext::default();
+                        }
                     }
-                }
+                    Err(_) => return FocusContext::default(),
+                },
                 Err(_) => return FocusContext::default(),
-            },
-            Err(_) => return FocusContext::default(),
-        };
+            };
 
         if active_window == 0 {
             return FocusContext::default();
         }
 
         // 获取窗口标题 (_NET_WM_NAME)
-        let window_title = Self::get_x11_text_property(&conn, active_window, wm_name_atom, utf8_string_atom)
-            .or_else(|| {
-                // 回退到 WM_NAME
-                let wm_name_legacy = conn.intern_atom(false, b"WM_NAME")
-                    .ok()
-                    .and_then(|c| c.reply().ok())
-                    .map(|r| r.atom);
-                wm_name_legacy.and_then(|atom| Self::get_x11_text_property(&conn, active_window, atom, AtomEnum::STRING.into()))
-            });
+        let window_title =
+            Self::get_x11_text_property(&conn, active_window, wm_name_atom, utf8_string_atom)
+                .or_else(|| {
+                    // 回退到 WM_NAME
+                    let wm_name_legacy = conn
+                        .intern_atom(false, b"WM_NAME")
+                        .ok()
+                        .and_then(|c| c.reply().ok())
+                        .map(|r| r.atom);
+                    wm_name_legacy.and_then(|atom| {
+                        Self::get_x11_text_property(
+                            &conn,
+                            active_window,
+                            atom,
+                            AtomEnum::STRING.into(),
+                        )
+                    })
+                });
 
         // 获取应用名称 (WM_CLASS)
         let app_name = Self::get_wm_class(&conn, active_window, wm_class_atom);
@@ -269,21 +277,25 @@ impl WindowWatcher {
         use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
 
         // 获取 _NET_WM_STATE 和 _NET_WM_STATE_FULLSCREEN atoms
-        let wm_state_atom = conn.intern_atom(false, b"_NET_WM_STATE")
+        let wm_state_atom = conn
+            .intern_atom(false, b"_NET_WM_STATE")
             .ok()
             .and_then(|c| c.reply().ok())
             .map(|r| r.atom);
 
-        let fullscreen_atom = conn.intern_atom(false, b"_NET_WM_STATE_FULLSCREEN")
+        let fullscreen_atom = conn
+            .intern_atom(false, b"_NET_WM_STATE_FULLSCREEN")
             .ok()
             .and_then(|c| c.reply().ok())
             .map(|r| r.atom);
 
         if let (Some(state_atom), Some(fs_atom)) = (wm_state_atom, fullscreen_atom) {
-            if let Ok(cookie) = conn.get_property(false, window, state_atom, AtomEnum::ATOM, 0, 32) {
+            if let Ok(cookie) = conn.get_property(false, window, state_atom, AtomEnum::ATOM, 0, 32)
+            {
                 if let Ok(reply) = cookie.reply() {
                     // 检查 _NET_WM_STATE_FULLSCREEN 是否在状态列表中
-                    let atoms: Vec<u32> = reply.value
+                    let atoms: Vec<u32> = reply
+                        .value
                         .chunks_exact(4)
                         .map(|chunk| u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                         .collect();
@@ -305,16 +317,15 @@ impl WindowWatcher {
 
     #[cfg(target_os = "windows")]
     fn get_windows_focus_context() -> FocusContext {
+        use windows::core::PWSTR;
         use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
-            GetWindowRect, IsZoomed,
-        };
         use windows::Win32::System::Threading::{
             OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
             PROCESS_QUERY_LIMITED_INFORMATION,
         };
-        use windows::core::PWSTR;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsZoomed,
+        };
 
         debug!("Getting Windows focus context");
 
@@ -346,7 +357,9 @@ impl WindowWatcher {
                     let mut size = name_buf.len() as u32;
                     let pwstr = PWSTR(name_buf.as_mut_ptr());
 
-                    if QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, pwstr, &mut size).is_ok() {
+                    if QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, pwstr, &mut size)
+                        .is_ok()
+                    {
                         let full_path = String::from_utf16_lossy(&name_buf[..size as usize]);
                         // 提取文件名
                         full_path

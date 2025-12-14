@@ -40,7 +40,9 @@ impl ScreenCapture {
 
         // 使用 xcap 捕获屏幕
         let monitors = xcap::Monitor::all()?;
-        let monitor = monitors.first().ok_or_else(|| anyhow::anyhow!("No monitor found"))?;
+        let monitor = monitors
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No monitor found"))?;
 
         let image = monitor.capture_image()?;
         let (width, height) = (image.width(), image.height());
@@ -48,19 +50,20 @@ impl ScreenCapture {
         debug!("Captured screen: {}x{}", width, height);
 
         // 如果需要下采样
-        let (final_pixels, final_width, final_height) = if width > self.target_width || height > self.target_height {
-            let resized = image::imageops::resize(
-                &image,
-                self.target_width,
-                self.target_height,
-                image::imageops::FilterType::Triangle,
-            );
-            let w = resized.width();
-            let h = resized.height();
-            (resized.into_raw(), w, h)
-        } else {
-            (image.into_raw(), width, height)
-        };
+        let (final_pixels, final_width, final_height) =
+            if width > self.target_width || height > self.target_height {
+                let resized = image::imageops::resize(
+                    &image,
+                    self.target_width,
+                    self.target_height,
+                    image::imageops::FilterType::Triangle,
+                );
+                let w = resized.width();
+                let h = resized.height();
+                (resized.into_raw(), w, h)
+            } else {
+                (image.into_raw(), width, height)
+            };
 
         Ok(CapturedFrame {
             pixels: final_pixels,

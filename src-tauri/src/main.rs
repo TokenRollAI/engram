@@ -99,7 +99,7 @@ fn setup_tray(app: &tauri::App) -> anyhow::Result<()> {
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("Engram - 语义记忆增强系统")
         .menu(&menu)
-        .menu_on_left_click(false)
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => {
                 info!("Toggle capture clicked");

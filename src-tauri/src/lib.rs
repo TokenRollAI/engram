@@ -11,8 +11,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-pub use ai::{VlmEngine, ScreenDescription, TextEmbedder};
-pub use daemon::{EngramDaemon, VlmTask, VlmTaskConfig, SummarizerTask, SummarizerTaskConfig};
+pub use ai::{ScreenDescription, TextEmbedder, VlmEngine};
+pub use daemon::{EngramDaemon, SummarizerTask, SummarizerTaskConfig, VlmTask, VlmTaskConfig};
 pub use db::Database;
 
 /// 应用全局状态
@@ -53,7 +53,14 @@ impl AppState {
             SummarizerTaskConfig::default(),
         )));
 
-        let state = Self { db, daemon, vlm, embedder, vlm_task, summarizer_task };
+        let state = Self {
+            db,
+            daemon,
+            vlm,
+            embedder,
+            vlm_task,
+            summarizer_task,
+        };
 
         // 检查是否有保存的 AI 配置，如果有则自动初始化
         state.try_auto_initialize_ai().await;
@@ -68,12 +75,12 @@ impl AppState {
         let embedding_config = commands::load_embedding_config_from_db(&self.db);
 
         // 检查是否有有效的 VLM 配置（非默认端点或有 API Key）
-        let has_custom_vlm = vlm_config.api_key.is_some()
-            || !vlm_config.endpoint.contains("127.0.0.1:11434");
+        let has_custom_vlm =
+            vlm_config.api_key.is_some() || !vlm_config.endpoint.contains("127.0.0.1:11434");
 
         // 检查是否有有效的 Embedding 配置
-        let has_custom_embedding = embedding_config.api_key.is_some()
-            || embedding_config.endpoint.is_some();
+        let has_custom_embedding =
+            embedding_config.api_key.is_some() || embedding_config.endpoint.is_some();
 
         let mut vlm_initialized = false;
 
@@ -82,11 +89,17 @@ impl AppState {
 
             // 初始化 VLM
             if has_custom_vlm || vlm_config.api_key.is_some() {
-                info!("  VLM endpoint: {}, model: {}", vlm_config.endpoint, vlm_config.model);
+                info!(
+                    "  VLM endpoint: {}, model: {}",
+                    vlm_config.endpoint, vlm_config.model
+                );
                 let mut engine = ai::VlmEngine::new(vlm_config.clone());
                 match engine.initialize().await {
                     Ok(_) => {
-                        info!("  VLM initialized successfully (backend: {})", engine.backend_name());
+                        info!(
+                            "  VLM initialized successfully (backend: {})",
+                            engine.backend_name()
+                        );
                         *self.vlm.write().await = Some(engine);
                         vlm_initialized = true;
                     }
@@ -98,12 +111,17 @@ impl AppState {
 
             // 初始化 Embedding
             {
-                info!("  Embedding endpoint: {:?}, model: {}",
-                      embedding_config.endpoint, embedding_config.model);
+                info!(
+                    "  Embedding endpoint: {:?}, model: {}",
+                    embedding_config.endpoint, embedding_config.model
+                );
                 let mut embedder = ai::TextEmbedder::with_config(embedding_config);
                 match embedder.initialize().await {
                     Ok(_) => {
-                        info!("  Embedder initialized successfully (backend: {})", embedder.backend_name());
+                        info!(
+                            "  Embedder initialized successfully (backend: {})",
+                            embedder.backend_name()
+                        );
                         *self.embedder.write().await = embedder;
                     }
                     Err(e) => {
@@ -138,7 +156,10 @@ impl AppState {
                     if let Err(e) = engine.initialize().await {
                         warn!("Failed to initialize VLM engine: {}", e);
                     } else {
-                        info!("VLM engine initialized (backend: {})", engine.backend_name());
+                        info!(
+                            "VLM engine initialized (backend: {})",
+                            engine.backend_name()
+                        );
                         *self.vlm.write().await = Some(engine);
                         vlm_initialized = true;
                     }
@@ -155,7 +176,10 @@ impl AppState {
             if let Err(e) = embedder.initialize().await {
                 warn!("Failed to initialize embedder: {}", e);
             } else {
-                info!("Embedder initialized (backend: {})", embedder.backend_name());
+                info!(
+                    "Embedder initialized (backend: {})",
+                    embedder.backend_name()
+                );
             }
         }
 
@@ -216,7 +240,10 @@ impl AppState {
     }
 
     /// 使用 VLM 配置启动摘要任务
-    pub async fn start_summarizer_task_with_config(&self, vlm_config: ai::VlmConfig) -> anyhow::Result<()> {
+    pub async fn start_summarizer_task_with_config(
+        &self,
+        vlm_config: ai::VlmConfig,
+    ) -> anyhow::Result<()> {
         // 从 VLM 配置创建 Summarizer 配置（复用 endpoint 和 api_key）
         // 视觉模型也能很好地处理纯文本任务，直接使用用户配置的模型
         let summarizer_config = ai::SummarizerConfig {

@@ -83,7 +83,10 @@ impl SummarizerTask {
                 *self.summarizer.lock().await = Some(summarizer);
             }
             Err(e) => {
-                warn!("Failed to initialize summarizer: {}. Task will retry later.", e);
+                warn!(
+                    "Failed to initialize summarizer: {}. Task will retry later.",
+                    e
+                );
                 // 不返回错误，任务仍然启动，后续会重试
             }
         }
@@ -103,10 +106,7 @@ impl SummarizerTask {
             let mut ticker = interval(Duration::from_millis(interval_ms));
             let mut last_daily_summary_day: Option<u32> = None;
 
-            info!(
-                "Summarizer task loop started (interval: {}ms)",
-                interval_ms
-            );
+            info!("Summarizer task loop started (interval: {}ms)", interval_ms);
 
             loop {
                 tokio::select! {
@@ -215,16 +215,23 @@ impl SummarizerTask {
 
         // 生成摘要
         let guard = summarizer.lock().await;
-        let summarizer_ref = guard.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Summarizer not initialized")
-        })?;
+        let summarizer_ref = guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Summarizer not initialized"))?;
 
         let summary = summarizer_ref
             .generate_summary(&traces, SummaryType::Short)
             .await?;
 
         // 保存摘要
-        Self::save_summary(db, start_time, end_time, "short", &summary, traces.len() as u32)?;
+        Self::save_summary(
+            db,
+            start_time,
+            end_time,
+            "short",
+            &summary,
+            traces.len() as u32,
+        )?;
 
         // 保存实体
         Self::save_entities(db, &summary.entities, end_time)?;
@@ -255,13 +262,6 @@ impl SummarizerTask {
             return Ok(());
         }
 
-        // 合并短摘要内容
-        let combined_content: String = short_summaries
-            .iter()
-            .map(|s| s.content.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n---\n\n");
-
         // 获取今日 traces 数量
         let traces = db.get_traces(today_start, today_end, 1000, 0)?;
 
@@ -273,9 +273,9 @@ impl SummarizerTask {
 
         // 使用 LLM 生成每日摘要
         let guard = summarizer.lock().await;
-        let summarizer_ref = guard.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Summarizer not initialized")
-        })?;
+        let summarizer_ref = guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Summarizer not initialized"))?;
 
         let summary = summarizer_ref
             .generate_summary(&traces, SummaryType::Daily)
@@ -371,12 +371,9 @@ impl SummarizerTask {
             SummaryType::Short => {
                 let end_time = now.timestamp_millis();
                 let start_time = end_time - self.config.interval_ms as i64;
-                Self::generate_short_summary(&self.db, &self.summarizer, start_time, end_time)
-                    .await
+                Self::generate_short_summary(&self.db, &self.summarizer, start_time, end_time).await
             }
-            SummaryType::Daily => {
-                Self::generate_daily_summary(&self.db, &self.summarizer).await
-            }
+            SummaryType::Daily => Self::generate_daily_summary(&self.db, &self.summarizer).await,
         }
     }
 }

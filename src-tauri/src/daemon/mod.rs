@@ -112,11 +112,14 @@ impl EngramDaemon {
                     return;
                 }
             };
-            let mut hasher = PerceptualHasher::new();
+            let hasher = PerceptualHasher::new();
             let idle_detector = IdleDetector::new(idle_threshold_ms);
             let mut last_hash: Option<[u8; 8]> = None;
 
-            info!("Daemon capture loop started (idle threshold: {}ms)", idle_threshold_ms);
+            info!(
+                "Daemon capture loop started (idle threshold: {}ms)",
+                idle_threshold_ms
+            );
 
             loop {
                 tokio::select! {
@@ -211,7 +214,11 @@ impl EngramDaemon {
             is_paused: self.is_paused.load(Ordering::SeqCst),
             is_idle: self.is_idle.load(Ordering::SeqCst),
             idle_time_ms: self.idle_time_ms.load(Ordering::SeqCst),
-            last_capture_time: if last_time > 0 { Some(last_time as i64) } else { None },
+            last_capture_time: if last_time > 0 {
+                Some(last_time as i64)
+            } else {
+                None
+            },
             total_captures_today: self.total_captures_today.load(Ordering::SeqCst),
         }
     }
@@ -226,7 +233,12 @@ impl EngramDaemon {
     }
 
     /// 更新配置
-    pub fn update_config(&mut self, capture_interval_ms: Option<u64>, idle_threshold_ms: Option<u64>, similarity_threshold: Option<u32>) {
+    pub fn update_config(
+        &mut self,
+        capture_interval_ms: Option<u64>,
+        idle_threshold_ms: Option<u64>,
+        similarity_threshold: Option<u32>,
+    ) {
         if let Some(interval) = capture_interval_ms {
             self.capture_interval_ms = interval;
             info!("Updated capture interval: {}ms", interval);
@@ -254,7 +266,10 @@ impl EngramDaemon {
         let image_path = db.save_screenshot(&frame.pixels, frame.width, frame.height)?;
 
         // 将感知哈希转换为 hex 字符串
-        let phash_hex = phash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        let phash_hex = phash
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
 
         // 插入数据库记录
         let trace = NewTrace {
@@ -274,7 +289,10 @@ impl EngramDaemon {
 
         let (trace_id, session_id) = db.insert_trace(&trace)?;
         debug!("Frame saved: {}", trace.image_path);
-        debug!("Trace inserted: id={}, session_id={:?}", trace_id, session_id);
+        debug!(
+            "Trace inserted: id={}, session_id={:?}",
+            trace_id, session_id
+        );
 
         Ok(())
     }

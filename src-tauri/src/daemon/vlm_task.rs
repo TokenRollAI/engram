@@ -226,7 +226,10 @@ impl VlmTask {
         }
 
         let trace_count = pending_traces.len();
-        debug!("Found {} pending traces to process concurrently", trace_count);
+        debug!(
+            "Found {} pending traces to process concurrently",
+            trace_count
+        );
 
         // 并发处理所有 traces
         let results: Vec<Result<i64, (i64, String)>> = stream::iter(pending_traces)
@@ -278,13 +281,14 @@ impl VlmTask {
         trace: &Trace,
     ) -> anyhow::Result<()> {
         // 1. 获取图片路径
-        let image_path_str = trace.image_path.as_ref()
+        let image_path_str = trace
+            .image_path
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Trace {} has no image_path", trace.id))?;
 
         // 2. 加载图片（同步操作，在 spawn_blocking 中执行）
         let path = db.get_full_path(image_path_str);
-        let image = tokio::task::spawn_blocking(move || Self::load_image(&path))
-            .await??;
+        let image = tokio::task::spawn_blocking(move || Self::load_image(&path)).await??;
 
         // 3. 组装上下文（Session + 最近 1-2 条 trace），并调用 VLM 分析（异步 HTTP 请求，可并发）
         let session_id = trace.activity_session_id;
@@ -376,7 +380,11 @@ impl VlmTask {
         // 9. 把 VLM 结论同步到 Session（对外的核心视图）
         if let Some(sid) = session_id {
             let is_key_action = description.is_key_action;
-            let action_description = description.action_description.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let action_description = description
+                .action_description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
 
             let raw_json = serde_json::to_string(&description).ok();
             db.append_activity_session_event(
@@ -449,10 +457,6 @@ impl VlmTask {
 
     /// 序列化嵌入向量为字节数组
     fn serialize_embedding(embedding: &[f32]) -> Vec<u8> {
-        embedding
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect()
+        embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
     }
-
 }

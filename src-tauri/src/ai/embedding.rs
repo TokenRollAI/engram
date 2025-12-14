@@ -156,8 +156,23 @@ impl TextEmbedder {
             return Ok(());
         }
 
+        debug!(
+            "Embedding config: endpoint={:?}, model={}, api_key_set={}",
+            self.config.endpoint,
+            self.config.model,
+            self.config
+                .api_key
+                .as_deref()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+        );
+
         match &self.backend {
-            EmbeddingBackend::OpenAiCompatible { endpoint, model, api_key } => {
+            EmbeddingBackend::OpenAiCompatible {
+                endpoint,
+                model,
+                api_key,
+            } => {
                 info!("Initializing embedding with OpenAI-compatible API");
                 info!("  Endpoint: {}", endpoint);
                 info!("  Model: {}", model);
@@ -219,7 +234,7 @@ impl TextEmbedder {
 
         let model = fastembed::TextEmbedding::try_new(
             fastembed::InitOptions::new(fastembed::EmbeddingModel::AllMiniLML6V2)
-                .with_show_download_progress(true)
+                .with_show_download_progress(true),
         )?;
 
         *self.local_model.lock().unwrap() = Some(model);
@@ -265,7 +280,10 @@ impl TextEmbedder {
     /// 嵌入单个文本
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let results = self.embed_batch(&[text.to_string()]).await?;
-        results.into_iter().next().ok_or_else(|| anyhow!("No embedding returned"))
+        results
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("No embedding returned"))
     }
 
     /// 嵌入单个文本（同步版本，仅本地模式）
@@ -276,13 +294,16 @@ impl TextEmbedder {
         match &self.backend {
             EmbeddingBackend::Local => {
                 let model_guard = self.local_model.lock().unwrap();
-                let model = model_guard.as_ref()
+                let model = model_guard
+                    .as_ref()
                     .ok_or_else(|| anyhow!("Local model not initialized"))?;
 
                 let truncated = Self::truncate_text(text, 512);
                 let embeddings = model.embed(vec![truncated], None)?;
 
-                embeddings.into_iter().next()
+                embeddings
+                    .into_iter()
+                    .next()
                     .ok_or_else(|| anyhow!("No embedding returned"))
             }
             EmbeddingBackend::OpenAiCompatible { .. } => {
@@ -301,12 +322,15 @@ impl TextEmbedder {
         *self.last_used.lock().unwrap() = Instant::now();
 
         match &self.backend {
-            EmbeddingBackend::OpenAiCompatible { endpoint, model, api_key } => {
-                self.embed_with_api(endpoint, model, api_key.as_deref(), texts).await
+            EmbeddingBackend::OpenAiCompatible {
+                endpoint,
+                model,
+                api_key,
+            } => {
+                self.embed_with_api(endpoint, model, api_key.as_deref(), texts)
+                    .await
             }
-            EmbeddingBackend::Local => {
-                self.embed_with_local(texts)
-            }
+            EmbeddingBackend::Local => self.embed_with_local(texts),
         }
     }
 
@@ -318,7 +342,8 @@ impl TextEmbedder {
         api_key: Option<&str>,
         texts: &[String],
     ) -> Result<Vec<Vec<f32>>> {
-        let truncated: Vec<String> = texts.iter()
+        let truncated: Vec<String> = texts
+            .iter()
             .map(|t| Self::truncate_text(t, 8000)) // OpenAI 支持更长的文本
             .collect();
 
@@ -352,9 +377,7 @@ impl TextEmbedder {
         }
 
         let result: EmbeddingResponse = response.json().await?;
-        let embeddings: Vec<Vec<f32>> = result.data.into_iter()
-            .map(|d| d.embedding)
-            .collect();
+        let embeddings: Vec<Vec<f32>> = result.data.into_iter().map(|d| d.embedding).collect();
 
         debug!("Embedded {} texts via API", embeddings.len());
         Ok(embeddings)
@@ -363,12 +386,11 @@ impl TextEmbedder {
     /// 使用本地模型嵌入
     fn embed_with_local(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let model_guard = self.local_model.lock().unwrap();
-        let model = model_guard.as_ref()
+        let model = model_guard
+            .as_ref()
             .ok_or_else(|| anyhow!("Local model not initialized"))?;
 
-        let truncated: Vec<String> = texts.iter()
-            .map(|t| Self::truncate_text(t, 512))
-            .collect();
+        let truncated: Vec<String> = texts.iter().map(|t| Self::truncate_text(t, 512)).collect();
 
         let embeddings = model.embed(truncated, None)?;
         debug!("Embedded {} texts locally", embeddings.len());
@@ -414,14 +436,13 @@ impl TextEmbedder {
 
     /// 将向量序列化为二进制
     pub fn serialize_embedding(embedding: &[f32]) -> Vec<u8> {
-        embedding.iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect()
+        embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
     }
 
     /// 从二进制反序列化向量
     pub fn deserialize_embedding(bytes: &[u8]) -> Vec<f32> {
-        bytes.chunks_exact(4)
+        bytes
+            .chunks_exact(4)
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect()
     }
@@ -512,8 +533,9 @@ impl EmbeddingQueue {
     }
 
     pub fn should_flush(&self) -> bool {
-        self.pending.len() >= self.batch_size ||
-        (self.pending.len() > 0 && self.last_flush.elapsed().as_secs() >= self.flush_interval_secs)
+        self.pending.len() >= self.batch_size
+            || (self.pending.len() > 0
+                && self.last_flush.elapsed().as_secs() >= self.flush_interval_secs)
     }
 
     pub fn drain(&mut self) -> Vec<(String, i64)> {

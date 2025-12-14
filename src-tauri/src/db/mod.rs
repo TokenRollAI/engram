@@ -1467,6 +1467,7 @@ impl Database {
     }
 
     /// 反序列化向量
+    #[allow(dead_code)]
     fn deserialize_embedding(bytes: &[u8]) -> Vec<f32> {
         bytes
             .chunks_exact(4)
@@ -1475,6 +1476,7 @@ impl Database {
     }
 
     /// 计算余弦相似度
+    #[allow(dead_code)]
     fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         if a.len() != b.len() {
             return 0.0;

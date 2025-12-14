@@ -37,7 +37,10 @@ impl IdleDetector {
         let is_idle = idle_time >= self.threshold_ms;
 
         if is_idle {
-            debug!("User is idle ({}ms >= {}ms threshold)", idle_time, self.threshold_ms);
+            debug!(
+                "User is idle ({}ms >= {}ms threshold)",
+                idle_time, self.threshold_ms
+            );
         }
 
         is_idle
