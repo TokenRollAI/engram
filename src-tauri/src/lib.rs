@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 pub use ai::{VlmEngine, ScreenDescription, TextEmbedder};
-pub use daemon::EngramDaemon;
+pub use daemon::{EngramDaemon, VlmTask, VlmTaskConfig};
 pub use db::Database;
 
 /// 应用全局状态
@@ -25,6 +25,8 @@ pub struct AppState {
     pub vlm: Arc<RwLock<Option<VlmEngine>>>,
     /// 文本嵌入器
     pub embedder: Arc<RwLock<TextEmbedder>>,
+    /// VLM 分析后台任务
+    pub vlm_task: Arc<RwLock<VlmTask>>,
 }
 
 impl AppState {
@@ -35,7 +37,15 @@ impl AppState {
         let vlm = Arc::new(RwLock::new(None)); // 延迟初始化
         let embedder = Arc::new(RwLock::new(TextEmbedder::new()));
 
-        let state = Self { db, daemon, vlm, embedder };
+        // 创建 VLM 任务（默认启用）
+        let vlm_task = Arc::new(RwLock::new(VlmTask::new(
+            db.clone(),
+            vlm.clone(),
+            embedder.clone(),
+            VlmTaskConfig::default(),
+        )));
+
+        let state = Self { db, daemon, vlm, embedder, vlm_task };
 
         // 检查是否有保存的 AI 配置，如果有则自动初始化
         state.try_auto_initialize_ai().await;
@@ -57,6 +67,8 @@ impl AppState {
         let has_custom_embedding = embedding_config.api_key.is_some()
             || embedding_config.endpoint.is_some();
 
+        let mut vlm_initialized = false;
+
         if has_custom_vlm || has_custom_embedding {
             info!("Found saved AI config, auto-initializing...");
 
@@ -68,6 +80,7 @@ impl AppState {
                     Ok(_) => {
                         info!("  VLM initialized successfully (backend: {})", engine.backend_name());
                         *self.vlm.write().await = Some(engine);
+                        vlm_initialized = true;
                     }
                     Err(e) => {
                         warn!("  Failed to auto-initialize VLM: {}", e);
@@ -90,6 +103,13 @@ impl AppState {
                     }
                 }
             }
+
+            // 如果 VLM 初始化成功，启动 VLM 分析任务
+            if vlm_initialized {
+                if let Err(e) = self.start_vlm_task().await {
+                    warn!("Failed to start VLM task: {}", e);
+                }
+            }
         } else {
             info!("No saved AI config found, skipping auto-initialization");
         }
@@ -97,6 +117,8 @@ impl AppState {
 
     /// 初始化 AI 模块（延迟加载）
     pub async fn initialize_ai(&self) -> anyhow::Result<()> {
+        let mut vlm_initialized = false;
+
         // 自动检测并初始化 VLM（优先本地 Ollama/vLLM）
         {
             match ai::VlmEngine::auto_detect().await {
@@ -106,6 +128,7 @@ impl AppState {
                     } else {
                         info!("VLM engine initialized (backend: {})", engine.backend_name());
                         *self.vlm.write().await = Some(engine);
+                        vlm_initialized = true;
                     }
                 }
                 Err(e) => {
@@ -124,7 +147,24 @@ impl AppState {
             }
         }
 
+        // 如果 VLM 初始化成功，启动 VLM 分析任务
+        if vlm_initialized {
+            self.start_vlm_task().await?;
+        }
+
         Ok(())
+    }
+
+    /// 启动 VLM 分析后台任务
+    pub async fn start_vlm_task(&self) -> anyhow::Result<()> {
+        let mut task = self.vlm_task.write().await;
+        task.start()
+    }
+
+    /// 停止 VLM 分析后台任务
+    pub async fn stop_vlm_task(&self) {
+        let mut task = self.vlm_task.write().await;
+        task.stop();
     }
 
     /// 检查 VLM 是否可用

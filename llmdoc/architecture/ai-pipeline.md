@@ -1,36 +1,69 @@
 # AI 管道设计
 
-## 管道概览 (Phase 2.1 架构 - OpenAI 兼容 API)
+## 管道概览 (Phase 3.1 - VLM 后台任务架构)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│              Engram AI Pipeline - VLM 架构（OpenAI 兼容 API）              │
+│         Engram AI Pipeline - VLM 后台自动处理（M3.1 新增）                 │
 └──────────────────────────────────────────────────────────────────────────┘
 
-              输入                      处理                        输出
-         ┌──────────┐            ┌──────────────┐        ┌──────────────────┐
-   图像 ─►│  OpenAI  │───────────►│   Qwen3-VL   │───────►│ ScreenDescription│
-         │  兼容    │            │   (或其他)    │        │ {summary,        │
-         │  API     │            │   VLM 模型   │        │  text_content,   │
-         │          │            │ (通过HTTP)   │        │  detected_app,   │
-         │  后端:   │            └──────────────┘        │  activity_type,  │
-         │ Ollama   │                   │                 │  entities,       │
-         │ vLLM     │                   ▼                 │  confidence}     │
-         │ LM       │            ┌──────────────┐        └──────────────────┘
-         │ Studio   │───────────►│   MiniLM     │        ┌──────────────────┐
-   文本 ─►│ OpenAI   │            │   L6-v2      │───────►│  文本向量        │
-         │ Together │            │ (嵌入)       │        │  (384d)          │
-         │ AI 等    │            └──────────────┘        └──────────────────┘
-         │          │                   │
-         └──────────┘                   ▼
-                                   [向量搜索]
-                                        ▼
-                                ┌──────────────────┐
-                                │ 语义相关性排序    │
-                                └──────────────────┘
+[前台捕获]                          [后台分析（异步）]
+  |                                    |
+  v                                    v
+  捕获截图                    VlmTask 定时扫描
+  保存图片文件             (ocr_text IS NULL 的 traces)
+  (ocr_text=NULL)              |
+  |                            v
+  |                    批量加载截图
+  |                            |
+  |                            v
+  |                    ┌─────────────────┐
+  |                    │   OpenAI        │
+  |                    │   兼容 API      │
+  |                    │  (Ollama/vLLM)  │
+  |                    └────────┬────────┘
+  |                             |
+  |                             v
+  |                    ScreenDescription
+  |                    {summary, text,
+  |                     detected_app,
+  |                     activity_type,
+  |                     entities,
+  |                     confidence}
+  |                             |
+  |                             v
+  |                    ┌─────────────────┐
+  |                    │    MiniLM-L6    │
+  |                    │    (嵌入模型)    │
+  |                    └────────┬────────┘
+  |                             |
+  |                             v
+  |                    文本向量 (384d)
+  |                             |
+  |                             v
+  └──────────────┬──────────────┘
+                 |
+                 v
+        [数据库更新]
+        - ocr_text
+        - ocr_json
+        - embedding
 ```
 
-## 核心流程变更 (PaddleOCR → VLM)
+## 核心流程变更 (PaddleOCR → VLM → 后台自动处理)
+
+**阶段 1 (M2.1)**: OCR → VLM 替换
+- 移除 PaddleOCR 多步骤流程
+- 引入 VLM OpenAI 兼容 API 支持
+
+**阶段 2 (M2.5)**: 用户可配置
+- 添加 AI 配置界面
+- 支持多个后端选择
+
+**阶段 3 (M3.1)**: 后台自动处理 (新增)
+- 创建 VlmTask 后台任务
+- 自动处理待分析的 traces
+- 无需前端干预
 
 ### 移除的组件
 - **PaddleOCR** (ONNX): 多步骤的文本检测和识别流程
@@ -47,6 +80,186 @@
   - 核心结构: `VlmEngine`, `VlmConfig`, `ScreenDescription`
   - HTTP 客户端: reqwest 0.12
   - 配置预设: `VlmConfig::ollama()`, `VlmConfig::openai()`, `VlmConfig::custom()`
+- **VlmTask 后台任务** (M3.1 新增): 自动处理待分析的 traces
+  - 文件: `src-tauri/src/daemon/vlm_task.rs` (~290 行)
+  - 核心结构: `VlmTask`, `VlmTaskConfig`, `VlmTaskStatus`
+  - 特性: 定时扫描、批处理、异步处理、可配置
+
+## VlmTask 后台处理架构 (M3.1)
+
+### 设计目标
+
+1. **自动化** - 无需前端干预，自动处理待分析的 traces
+2. **异步非阻塞** - 不影响前台捕获性能
+3. **批处理** - 支持批量处理以优化吞吐量
+4. **可配置** - 处理间隔和批处理大小可调整
+5. **容错** - 单条失败不影响其他 traces
+
+### VlmTask 结构体
+
+```rust
+pub struct VlmTask {
+    db: Arc<Database>,
+    vlm: Arc<RwLock<Option<VlmEngine>>>,
+    embedder: Arc<RwLock<TextEmbedder>>,
+    config: VlmTaskConfig,
+    is_running: Arc<AtomicBool>,
+    processed_count: Arc<AtomicU64>,
+    failed_count: Arc<AtomicU64>,
+    shutdown_tx: Option<mpsc::Sender<()>>,
+}
+
+pub struct VlmTaskConfig {
+    pub interval_ms: u64,      // 处理间隔（默认 10000ms）
+    pub batch_size: u32,       // 批处理大小（默认 5）
+    pub enabled: bool,         // 是否启用（默认 true）
+}
+
+pub struct VlmTaskStatus {
+    pub is_running: bool,           // 任务是否在运行
+    pub processed_count: u64,       // 成功处理的 traces 数量
+    pub failed_count: u64,          // 处理失败的 traces 数量
+    pub pending_count: u64,         // 待处理的 traces 数量
+}
+```
+
+### 执行流程
+
+```
+┌─────────────────────────────────┐
+│  VlmTask::start()               │
+│  (在 AppState 初始化时调用)      │
+└────────────┬────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────┐
+│  创建 Tokio 异步任务             │
+│  设置定时器 (interval_ms)        │
+└────────────┬────────────────────┘
+             │
+             ▼ (每个周期)
+┌─────────────────────────────────┐
+│  检查 VLM 是否就绪               │
+│  (is_ready == true)             │
+└────────────┬────────────────────┘
+             │
+      No ────┤──────► 跳过本周期
+             │
+             Yes
+             ▼
+┌─────────────────────────────────┐
+│  查询待分析的 traces             │
+│  WHERE ocr_text IS NULL         │
+│  LIMIT batch_size               │
+└────────────┬────────────────────┘
+             │
+             ├──(无待分析)──► 跳过本周期
+             │
+             Yes
+             ▼
+┌─────────────────────────────────┐
+│  for each trace in pending:     │
+│    process_single_trace()       │
+└────────────┬────────────────────┘
+             │
+             ├─► 加载截图文件
+             ├─► 调用 VLM 分析
+             ├─► 提取 ocr_text/ocr_json
+             ├─► 更新数据库 OCR 数据
+             ├─► 生成嵌入向量
+             └─► 更新数据库 embedding
+```
+
+### 单条 Trace 处理流程
+
+```
+Input: Trace { id, image_path, ocr_text=NULL, ... }
+  │
+  ├─► 1. 加载截图文件
+  │      path = db.get_full_path(&trace.image_path)
+  │      image = image::open(path).to_rgb8()
+  │
+  ├─► 2. 调用 VLM 分析
+  │      desc = vlm_engine.analyze_screen(&image).await?
+  │      返回 ScreenDescription {
+  │        summary: String,
+  │        text_content: Option<String>,
+  │        detected_app: Option<String>,
+  │        activity_type: Option<String>,
+  │        entities: Vec<String>,
+  │        confidence: f32,
+  │      }
+  │
+  ├─► 3. 提取 OCR 数据
+  │      ocr_text = VlmEngine::get_text_for_embedding(&desc)
+  │      ocr_json = serde_json::to_string(&desc)
+  │
+  ├─► 4. 更新数据库（OCR 数据）
+  │      db.update_trace_ocr(trace.id, &ocr_text, &ocr_json)?
+  │
+  ├─► 5. 生成嵌入向量
+  │      embedding = embedder.embed(&ocr_text).await?
+  │      返回 Vec<f32> (384 维)
+  │
+  ├─► 6. 序列化嵌入向量
+  │      embedding_bytes = embedding.iter()
+  │        .flat_map(|f| f.to_le_bytes())
+  │        .collect::<Vec<u8>>()
+  │
+  ├─► 7. 更新数据库（嵌入向量）
+  │      db.update_trace_embedding(trace.id, &embedding_bytes)?
+  │
+  └─► Output: Success (processed_count++)
+              或 Error (failed_count++)
+```
+
+### 与 AppState 集成
+
+```rust
+pub struct AppState {
+    pub db: Arc<Database>,
+    pub daemon: Arc<RwLock<EngramDaemon>>,
+    pub vlm: Arc<RwLock<Option<VlmEngine>>>,
+    pub embedder: Arc<RwLock<TextEmbedder>>,
+    pub vlm_task: Arc<RwLock<VlmTask>>,  // M3.1 新增
+}
+
+impl AppState {
+    pub async fn new() -> anyhow::Result<Self> {
+        // ... 初始化其他部分 ...
+
+        // 创建 VlmTask（默认启用）
+        let vlm_task = Arc::new(RwLock::new(VlmTask::new(
+            db.clone(),
+            vlm.clone(),
+            embedder.clone(),
+            VlmTaskConfig::default(),
+        )));
+
+        // ... 尝试自动初始化 AI ...
+
+        // 如果 VLM 初始化成功，启动后台任务
+        if vlm_initialized {
+            let mut task = state.vlm_task.write().await;
+            task.start()?;
+            info!("VLM background task started");
+        }
+
+        Ok(state)
+    }
+}
+```
+
+### 性能特性
+
+| 特性 | 说明 |
+|------|------|
+| **处理间隔** | 默认 10 秒，可配置 |
+| **批处理大小** | 默认 5，可配置 |
+| **异步模式** | 使用 Tokio，不阻塞主线程 |
+| **容错机制** | 单条失败记录，但继续处理其他 traces |
+| **优雅关闭** | 支持 shutdown_tx 信号，安全停止任务 |
+| **状态监控** | 通过 VlmTaskStatus 监控处理进度 |
 
 ## 模型清单
 

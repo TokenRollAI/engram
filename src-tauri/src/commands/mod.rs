@@ -71,13 +71,13 @@ pub async fn get_traces(
 }
 
 /// 获取图片完整路径
+/// 返回统一使用正斜杠的路径，确保跨平台兼容性
 #[tauri::command]
 pub async fn get_image_path(
     state: State<'_, AppState>,
     relative_path: String,
 ) -> Result<String, String> {
-    let full_path = state.db.get_full_path(&relative_path);
-    Ok(full_path.to_string_lossy().to_string())
+    Ok(state.db.get_full_path_string(&relative_path))
 }
 
 /// 搜索痕迹
@@ -384,6 +384,8 @@ pub fn load_embedding_config_from_db(db: &crate::db::Database) -> EmbeddingConfi
 
 /// 重新初始化 AI 模块
 async fn reinitialize_ai(state: &State<'_, AppState>, config: &AiConfig) -> Result<(), String> {
+    let mut vlm_initialized = false;
+
     // 重新初始化 VLM
     {
         let vlm_config = config.vlm.clone();
@@ -392,6 +394,7 @@ async fn reinitialize_ai(state: &State<'_, AppState>, config: &AiConfig) -> Resu
             Ok(_) => {
                 info!("VLM re-initialized with new config");
                 *state.vlm.write().await = Some(engine);
+                vlm_initialized = true;
             }
             Err(e) => {
                 warn!("Failed to initialize VLM with new config: {}", e);
@@ -412,6 +415,13 @@ async fn reinitialize_ai(state: &State<'_, AppState>, config: &AiConfig) -> Resu
             Err(e) => {
                 warn!("Failed to initialize embedder with new config: {}", e);
             }
+        }
+    }
+
+    // 如果 VLM 初始化成功，启动 VLM 分析任务
+    if vlm_initialized {
+        if let Err(e) = state.start_vlm_task().await {
+            warn!("Failed to start VLM task: {}", e);
         }
     }
 

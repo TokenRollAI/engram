@@ -6,6 +6,203 @@
 
 ---
 
+## [Phase 3 M3.1 VLM 后台分析与路径兼容性修复] - 2025-12-14
+
+### 发布内容
+
+**版本**: Phase 3 (The Mind) - 内存合成启动
+
+**变更类型**: 核心基础设施增强 - VLM 后台任务、路径处理优化
+
+#### 新增功能
+
+##### 1. VLM 分析后台任务 (VlmTask)
+
+创建了独立的后台异步任务处理待分析的 traces，实现自动化的屏幕理解管道：
+
+**核心特性**:
+- 定期扫描数据库中 `ocr_text IS NULL` 的 traces（待分析）
+- 支持可配置的处理间隔（默认 10 秒）和批处理大小（默认 5）
+- 异步调用 VLM 引擎进行屏幕分析
+- 自动更新 `ocr_text` 和 `ocr_json` 字段
+- 生成文本嵌入向量并存储到数据库
+
+**实现文件**:
+- `src-tauri/src/daemon/vlm_task.rs` (~290 行) - VlmTask 结构体和处理逻辑
+
+**关键结构体**:
+```rust
+pub struct VlmTask {
+    db: Arc<Database>,
+    vlm: Arc<RwLock<Option<VlmEngine>>>,
+    embedder: Arc<RwLock<TextEmbedder>>,
+    config: VlmTaskConfig,
+    is_running: Arc<AtomicBool>,
+    processed_count: Arc<AtomicU64>,
+    failed_count: Arc<AtomicU64>,
+    shutdown_tx: Option<mpsc::Sender<()>>,
+}
+
+pub struct VlmTaskConfig {
+    pub interval_ms: u64,      // 处理间隔（默认 10000ms）
+    pub batch_size: u32,       // 批处理大小（默认 5）
+    pub enabled: bool,         // 是否启用（默认 true）
+}
+
+pub struct VlmTaskStatus {
+    pub is_running: bool,
+    pub processed_count: u64,
+    pub failed_count: u64,
+    pub pending_count: u64,
+}
+```
+
+**执行流程**:
+1. 启动后台任务，设置定时器
+2. 每个周期检查 VLM 引擎是否就绪
+3. 查询待分析的 traces（LIMIT batch_size）
+4. 对每个 trace 执行以下步骤:
+   - 加载截图文件
+   - 调用 VLM 分析（获得 ScreenDescription）
+   - 提取文本内容和结构化数据
+   - 更新 ocr_text 和 ocr_json 字段
+   - 生成文本嵌入向量
+   - 更新 embedding 字段
+5. 记录处理统计（成功/失败计数）
+
+##### 2. AppState 更新
+
+在主应用状态中集成了 VLM 任务管理：
+
+**变更内容**:
+- 新增 `vlm_task` 字段
+- 在应用初始化时创建 VlmTask 实例（使用默认配置）
+- 在 AI 初始化成功后自动启动 VLM 任务
+
+**实现文件**:
+- `src-tauri/src/lib.rs` (AppState 结构体)
+
+**核心代码**:
+```rust
+pub struct AppState {
+    pub db: Arc<Database>,
+    pub daemon: Arc<RwLock<EngramDaemon>>,
+    pub vlm: Arc<RwLock<Option<VlmEngine>>>,
+    pub embedder: Arc<RwLock<TextEmbedder>>,
+    pub vlm_task: Arc<RwLock<VlmTask>>,  // 新增
+}
+
+// 在 try_auto_initialize_ai 中启动任务
+if vlm_initialized {
+    let mut task = state.vlm_task.write().await;
+    task.start()?;  // 启动后台处理
+}
+```
+
+##### 3. Windows 路径兼容性修复
+
+解决了 Windows 平台上预览图无法显示的问题，因为路径分隔符混合导致 Tauri 的 `convertFileSrc()` 无法正确处理。
+
+**问题描述**:
+- 存储路径使用正斜杠 (`/`)
+- `PathBuf::join()` 返回反斜杠 (`\`)
+- 混合路径无法被 Tauri 正确转换为 `file://` URL
+
+**解决方案**:
+- 新增 `get_full_path_string()` 方法，返回统一使用正斜杠的路径字符串
+- 更新 `get_image_path` Tauri 命令使用新方法
+
+**实现文件**:
+- `src-tauri/src/db/mod.rs` (Database 实现)
+
+**新增方法**:
+```rust
+pub fn get_full_path(&self, relative_path: &str) -> PathBuf {
+    self.data_dir.join(relative_path)
+}
+
+pub fn get_full_path_string(&self, relative_path: &str) -> String {
+    let path = self.get_full_path(relative_path);
+    // 统一使用正斜杠
+    path.to_string_lossy().replace('\\', "/")
+}
+```
+
+##### 4. 数据库新增方法
+
+支持 VLM 任务的后台处理：
+
+**新增方法**:
+- `get_traces_pending_ocr(limit)` - 查询待分析的 traces（WHERE ocr_text IS NULL）
+- `update_trace_ocr(trace_id, ocr_text, ocr_json)` - 更新 OCR 数据
+- `update_trace_embedding(trace_id, embedding)` - 更新嵌入向量
+
+#### 数据流更新
+
+新的数据流新增 VLM 后台处理环节：
+
+```
+截图保存 (ocr_text=NULL)
+    ↓
+[VlmTask 定期扫描]
+    ├─ interval_ms: 10秒
+    └─ batch_size: 5
+    ↓
+[加载截图文件]
+    ↓
+[调用 VLM 分析]
+    ├─ Ollama/vLLM/OpenAI
+    └─ 返回 ScreenDescription
+    ↓
+[提取文本和结构化数据]
+    ├─ ocr_text: 搜索用文本
+    └─ ocr_json: 完整结构化数据
+    ↓
+[生成文本嵌入向量]
+    └─ 384 维向量
+    ↓
+[更新数据库]
+    ├─ ocr_text
+    ├─ ocr_json
+    └─ embedding
+```
+
+#### 配置参数
+
+`VlmTaskConfig` 支持以下配置（均有合理的默认值）：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `interval_ms` | u64 | 10000 | 处理间隔（毫秒） |
+| `batch_size` | u32 | 5 | 每批处理的 traces 数量 |
+| `enabled` | bool | true | 是否启用后台任务 |
+
+#### 代码变更摘要
+
+**新增文件**:
+- `src-tauri/src/daemon/vlm_task.rs` (~290 行)
+
+**修改文件**:
+- `src-tauri/src/lib.rs` - AppState 新增 vlm_task 字段，自动启动任务
+- `src-tauri/src/db/mod.rs` - 新增数据库查询和更新方法
+- `src-tauri/src/daemon/mod.rs` - 导出 VlmTask 相关类型
+
+#### 性能优势
+
+1. **自动化处理** - 无需前端干预，后台自动处理待分析的 traces
+2. **批处理优化** - 支持可配置的批处理大小，平衡延迟和吞吐量
+3. **异步非阻塞** - 使用 Tokio async/await，不阻塞主程序
+4. **可配置** - 处理间隔和批处理大小均可调整
+5. **路径兼容** - Windows 路径问题彻底解决
+
+#### 文档更新
+
+- `llmdoc/reference/changelog.md` - 本条目
+- `llmdoc/architecture/data-flow.md` - 更新数据流图，新增 VLM 后台任务环节
+- `llmdoc/architecture/ai-pipeline.md` - 更新架构说明
+
+---
+
 ## [Phase 2 M2.5 用户控制与 AI 配置] - 2025-12-14
 
 ### 发布内容

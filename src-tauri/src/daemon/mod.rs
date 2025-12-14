@@ -7,12 +7,14 @@ mod context;
 mod hasher;
 mod idle;
 pub mod summarizer_task;
+pub mod vlm_task;
 
 pub use capture::ScreenCapture;
 pub use context::{FocusContext, WindowWatcher};
 pub use hasher::PerceptualHasher;
 pub use idle::IdleDetector;
 pub use summarizer_task::{SummarizerTask, SummarizerTaskConfig};
+pub use vlm_task::{VlmTask, VlmTaskConfig, VlmTaskStatus};
 
 use crate::db::Database;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

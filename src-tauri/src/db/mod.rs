@@ -305,8 +305,17 @@ impl Database {
     }
 
     /// 获取完整文件路径
+    /// 返回的路径使用正斜杠分隔符，确保跨平台兼容性
     pub fn get_full_path(&self, relative_path: &str) -> PathBuf {
         self.data_dir.join(relative_path)
+    }
+
+    /// 获取完整文件路径的字符串形式（统一使用正斜杠）
+    /// 用于前端显示和 URL 转换
+    pub fn get_full_path_string(&self, relative_path: &str) -> String {
+        let path = self.data_dir.join(relative_path);
+        // 统一使用正斜杠，确保 Tauri convertFileSrc() 能正确处理
+        path.to_string_lossy().replace('\\', "/")
     }
 
     /// 获取模型目录
