@@ -233,11 +233,15 @@ impl VlmTask {
         embedder: &Arc<RwLock<TextEmbedder>>,
         trace: &Trace,
     ) -> anyhow::Result<()> {
-        // 1. 加载图片
-        let image_path = db.get_full_path(&trace.image_path);
+        // 1. 获取图片路径
+        let image_path_str = trace.image_path.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Trace {} has no image_path", trace.id))?;
+
+        // 2. 加载图片
+        let image_path = db.get_full_path(image_path_str);
         let image = Self::load_image(&image_path)?;
 
-        // 2. 调用 VLM 分析
+        // 3. 调用 VLM 分析
         let description = {
             let vlm_guard = vlm.read().await;
             let vlm_engine = vlm_guard
@@ -246,23 +250,23 @@ impl VlmTask {
             vlm_engine.analyze_screen(&image).await?
         };
 
-        // 3. 提取 OCR 数据
+        // 4. 提取 OCR 数据
         let ocr_text = VlmEngine::get_text_for_embedding(&description);
         let ocr_json = serde_json::to_string(&description)?;
 
-        // 4. 更新数据库（OCR 数据）
+        // 5. 更新数据库（OCR 数据）
         db.update_trace_ocr(trace.id, &ocr_text, &ocr_json)?;
 
-        // 5. 生成嵌入向量
+        // 6. 生成嵌入向量
         let embedding = {
             let embedder_guard = embedder.read().await;
             embedder_guard.embed(&ocr_text).await?
         };
 
-        // 6. 序列化嵌入向量
+        // 7. 序列化嵌入向量
         let embedding_bytes = Self::serialize_embedding(&embedding);
 
-        // 7. 更新数据库（嵌入向量）
+        // 8. 更新数据库（嵌入向量）
         db.update_trace_embedding(trace.id, &embedding_bytes)?;
 
         info!(
