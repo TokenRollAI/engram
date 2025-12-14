@@ -156,12 +156,13 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             rule_type TEXT NOT NULL,
             pattern TEXT NOT NULL,
             enabled INTEGER DEFAULT 1,
-            created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+            created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            UNIQUE(rule_type, pattern)
         );
         "#,
     )?;
 
-    // 插入默认黑名单
+    // 插入默认黑名单（使用 INSERT OR IGNORE 配合 UNIQUE 约束）
     conn.execute_batch(
         r#"
         INSERT OR IGNORE INTO blacklist (rule_type, pattern) VALUES
@@ -172,6 +173,19 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             ('title', 'Incognito'),
             ('title', 'Private Browsing'),
             ('title', 'InPrivate');
+        "#,
+    )?;
+
+    // 迁移：清理已有的重复 blacklist 数据
+    // 保留每个 (rule_type, pattern) 组合中 id 最小的记录
+    conn.execute_batch(
+        r#"
+        DELETE FROM blacklist
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM blacklist
+            GROUP BY rule_type, pattern
+        );
         "#,
     )?;
 

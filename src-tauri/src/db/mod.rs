@@ -53,9 +53,9 @@ impl Database {
         }
     }
 
-    /// 保存截图文件（WebP 格式）
+    /// 保存截图文件（JPEG 格式）
     pub fn save_screenshot(&self, pixels: &[u8], width: u32, height: u32) -> Result<String> {
-        use image::codecs::webp::WebPEncoder;
+        use image::codecs::jpeg::JpegEncoder;
         use std::io::BufWriter;
 
         let now = Utc::now();
@@ -67,24 +67,26 @@ impl Database {
 
         fs::create_dir_all(&dir)?;
 
-        let filename = format!("{}.webp", now.timestamp_millis());
+        let filename = format!("{}.jpg", now.timestamp_millis());
         let path = dir.join(&filename);
 
-        // 创建图像
-        let img = image::RgbaImage::from_raw(width, height, pixels.to_vec())
+        // 创建图像 (RGBA -> RGB)
+        let rgba_img = image::RgbaImage::from_raw(width, height, pixels.to_vec())
             .ok_or_else(|| anyhow::anyhow!("Failed to create image from pixels"))?;
 
-        // 保存为 WebP 格式（有损压缩，质量 75%）
+        // 转换为 RGB (去除 alpha 通道)
+        let rgb_img = image::DynamicImage::ImageRgba8(rgba_img).to_rgb8();
+
+        // 保存为 JPEG 格式（质量 80%）
         let file = fs::File::create(&path)?;
         let writer = BufWriter::new(file);
-        let encoder = WebPEncoder::new_lossless(writer);
+        let mut encoder = JpegEncoder::new_with_quality(writer, 80);
 
-        // 使用 RGBA 编码
         encoder.encode(
-            img.as_raw(),
+            rgb_img.as_raw(),
             width,
             height,
-            image::ExtendedColorType::Rgba8,
+            image::ExtendedColorType::Rgb8,
         )?;
 
         // 返回相对路径
@@ -96,7 +98,7 @@ impl Database {
             filename
         );
 
-        debug!("Screenshot saved as WebP: {}", relative_path);
+        debug!("Screenshot saved as JPEG: {}", relative_path);
         Ok(relative_path)
     }
 
