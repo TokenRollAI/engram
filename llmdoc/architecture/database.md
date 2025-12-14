@@ -27,6 +27,8 @@ CREATE TABLE activity_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     app_name TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
     start_time INTEGER NOT NULL,
     end_time INTEGER NOT NULL,
 
@@ -64,10 +66,6 @@ CREATE TABLE traces (
     app_name TEXT,
     window_title TEXT,
     is_fullscreen INTEGER DEFAULT 0,  -- 0/1 布尔
-    window_x INTEGER,
-    window_y INTEGER,
-    window_w INTEGER,
-    window_h INTEGER,
 
     -- 系统状态
     is_idle INTEGER DEFAULT 0,
@@ -80,6 +78,14 @@ CREATE TABLE traces (
 
     -- 是否关键行为
     is_key_action INTEGER DEFAULT 0,
+
+    -- VLM 结构化输出（用于回放/上下文构建）
+    vlm_summary TEXT,
+    vlm_action_description TEXT,
+    vlm_activity_type TEXT,
+    vlm_confidence REAL,
+    vlm_entities_json TEXT,
+    vlm_raw_json TEXT,
 
     -- 语义向量 (384 维 float32，以 BLOB 存储)
     embedding BLOB,
@@ -101,32 +107,6 @@ CREATE INDEX idx_traces_app ON traces(app_name);
 
 -- Session 索引
 CREATE INDEX idx_traces_session ON traces(activity_session_id);
-
--- ============================================
--- 会话事件: activity_session_events (每条 trace 的 VLM 结论)
--- ============================================
-CREATE TABLE activity_session_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER NOT NULL,
-    trace_id INTEGER NOT NULL,
-    timestamp INTEGER NOT NULL,
-
-    summary TEXT,
-    action_description TEXT,
-    activity_type TEXT,
-    confidence REAL,
-    entities_json TEXT,
-    raw_json TEXT,
-    is_key_action INTEGER DEFAULT 0,
-
-    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
-
-    FOREIGN KEY (session_id) REFERENCES activity_sessions(id) ON DELETE CASCADE,
-    FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_session_events_session_time
-    ON activity_session_events(session_id, timestamp);
 
 -- ============================================
 -- 全文检索虚拟表
@@ -404,9 +384,9 @@ UPDATE traces
 SET embedding = NULL
 WHERE timestamp < (strftime('%s', 'now') - 30 * 86400) * 1000;
 
--- 可选：清理会话事件的 raw_json（保留聚合后的 session 结论即可）
-UPDATE activity_session_events
-SET raw_json = NULL
+-- 可选：清理 traces 的 vlm_raw_json（保留聚合后的 session 结论即可）
+UPDATE traces
+SET vlm_raw_json = NULL
 WHERE timestamp < (strftime('%s', 'now') - 30 * 86400) * 1000;
 ```
 

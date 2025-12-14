@@ -43,7 +43,6 @@ fn main() {
             commands::get_traces,
             commands::get_activity_sessions,
             commands::get_activity_session_traces,
-            commands::get_activity_session_events,
             commands::get_image_path,
             commands::get_image_data,
             commands::search_traces,

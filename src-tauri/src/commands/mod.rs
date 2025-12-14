@@ -5,8 +5,7 @@
 use crate::ai::{EmbeddingConfig, VlmConfig};
 use crate::daemon::{DaemonStatus, VlmTaskConfig};
 use crate::db::models::{
-    ActivitySession, ActivitySessionEvent, ChatMessage, Entity, SearchResult, Settings,
-    StorageStats, Summary, Trace,
+    ActivitySession, ChatMessage, Entity, SearchResult, Settings, StorageStats, Summary, Trace,
 };
 use crate::AppState;
 use serde::Serialize;
@@ -123,24 +122,6 @@ pub async fn get_activity_session_traces(
     state
         .db
         .get_traces_by_activity_session(session_id, limit.unwrap_or(200), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn get_activity_session_events(
-    state: State<'_, AppState>,
-    session_id: i64,
-    limit: Option<u32>,
-    offset: Option<u32>,
-) -> Result<Vec<ActivitySessionEvent>, String> {
-    debug!(
-        "get_activity_session_events: session_id={}, limit={:?}, offset={:?}",
-        session_id, limit, offset
-    );
-
-    state
-        .db
-        .get_activity_session_events(session_id, limit.unwrap_or(200), offset.unwrap_or(0))
         .map_err(|e| e.to_string())
 }
 
@@ -860,6 +841,41 @@ fn build_chat_context_from_sessions(
     sessions: &[ActivitySession],
     recent_traces: &[Trace],
 ) -> String {
+    fn format_key_actions(key_actions_json: &str, take_last: usize) -> Option<String> {
+        let v: serde_json::Value = serde_json::from_str(key_actions_json).ok()?;
+        let arr = v.as_array()?;
+        if arr.is_empty() {
+            return None;
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        for it in arr.iter().rev().take(take_last.max(1)).rev() {
+            let ts = it.get("timestamp").and_then(|x| x.as_i64()).unwrap_or(0);
+            let text = it
+                .get("action_description")
+                .and_then(|x| x.as_str())
+                .or_else(|| it.get("summary").and_then(|x| x.as_str()))
+                .unwrap_or("")
+                .trim();
+            if text.is_empty() {
+                continue;
+            }
+            let time = chrono::DateTime::from_timestamp_millis(ts)
+                .map(|t| {
+                    t.with_timezone(&chrono::Local)
+                        .format("%m-%d %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_else(|| "?".to_string());
+            lines.push(format!("- [{}] {}", time, text));
+        }
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
+    }
+
     let mut context = String::new();
 
     // Sessions（尽量按时间正序，便于 LLM 理解）
@@ -878,27 +894,45 @@ fn build_chat_context_from_sessions(
             .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
             .unwrap_or_default();
 
-        context.push_str(&format!(
-            "[Session {}-{}] {}\n",
-            start, end, session.app_name
-        ));
+        let title = session
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&session.app_name);
+
+        context.push_str(&format!("[Session {}-{}] {}\n", start, end, title));
+        if title != session.app_name {
+            context.push_str(&format!("  app: {}\n", session.app_name));
+        }
+
+        if let Some(desc) = session
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            context.push_str(&format!("  描述: {}\n", desc));
+        }
 
         if let Some(ctx) = &session.context_text {
-            let text: String = ctx
-                .chars()
-                .rev()
-                .take(800)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            if !text.trim().is_empty() {
-                context.push_str(&format!("  结论: {}\n", text.trim()));
+            if !ctx.trim().is_empty() {
+                context.push_str(&format!("  结论: {}\n", ctx.trim()));
             }
         }
         if let Some(key_actions_json) = &session.key_actions_json {
-            if !key_actions_json.trim().is_empty() {
-                context.push_str(&format!("  关键行为: {}\n", key_actions_json));
+            let json = key_actions_json.trim();
+            if !json.is_empty() {
+                if let Some(lines) = format_key_actions(json, 30) {
+                    context.push_str("  关键行为（最多30条）:\n");
+                    context.push_str(&lines);
+                    context.push('\n');
+                }
+                if let Some(lines) = format_key_actions(json, 3) {
+                    context.push_str("  最近3条关键行为:\n");
+                    context.push_str(&lines);
+                    context.push('\n');
+                }
             }
         }
         context.push('\n');
@@ -928,7 +962,19 @@ fn build_chat_context_from_sessions(
         }
     }
 
-    context
+    const MAX_CONTEXT_CHARS: usize = 262_144; // 256K
+    if context.chars().count() > MAX_CONTEXT_CHARS {
+        context
+            .chars()
+            .rev()
+            .take(MAX_CONTEXT_CHARS)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect()
+    } else {
+        context
+    }
 }
 
 /// 格式化时间范围描述（毫秒时间戳，使用本地时区）

@@ -4,7 +4,7 @@ use anyhow::Result;
 use rusqlite::Connection;
 use tracing::info;
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 /// 初始化数据库 Schema
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -34,7 +34,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             DROP TABLE IF EXISTS traces_vec;
             DROP TABLE IF EXISTS traces;
 
-            DROP TABLE IF EXISTS activity_session_events;
             DROP TABLE IF EXISTS activity_sessions;
 
             DROP TABLE IF EXISTS chat_messages;
@@ -62,6 +61,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
             app_name TEXT NOT NULL,
+            title TEXT,
+            description TEXT,
             start_time INTEGER NOT NULL,
             end_time INTEGER NOT NULL,
 
@@ -101,10 +102,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             app_name TEXT,
             window_title TEXT,
             is_fullscreen INTEGER DEFAULT 0,
-            window_x INTEGER,
-            window_y INTEGER,
-            window_w INTEGER,
-            window_h INTEGER,
 
             -- 系统状态
             is_idle INTEGER DEFAULT 0,
@@ -117,6 +114,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 
             -- 是否关键行为（由 VLM 分析阶段决定）
             is_key_action INTEGER DEFAULT 0,
+
+            -- VLM 结构化输出（用于回放/上下文构建）
+            vlm_summary TEXT,
+            vlm_action_description TEXT,
+            vlm_activity_type TEXT,
+            vlm_confidence REAL,
+            vlm_entities_json TEXT,
+            vlm_raw_json TEXT,
 
             -- 向量
             embedding BLOB,
@@ -132,34 +137,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
         CREATE INDEX IF NOT EXISTS idx_traces_app ON traces(app_name);
         CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(activity_session_id);
-        "#,
-    )?;
-
-    // 会话事件：每条 trace 的 VLM 结论挂到 session 上（而不是写回 trace）
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS activity_session_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            trace_id INTEGER NOT NULL,
-            timestamp INTEGER NOT NULL,
-
-            summary TEXT,
-            action_description TEXT,
-            activity_type TEXT,
-            confidence REAL,
-            entities_json TEXT,
-            raw_json TEXT,
-            is_key_action INTEGER DEFAULT 0,
-
-            created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
-
-            FOREIGN KEY (session_id) REFERENCES activity_sessions(id) ON DELETE CASCADE,
-            FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_session_events_session_time
-            ON activity_session_events(session_id, timestamp);
         "#,
     )?;
 

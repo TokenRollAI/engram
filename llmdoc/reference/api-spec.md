@@ -49,12 +49,6 @@ invoke('get_activity_session_traces', {
 }): Promise<Trace[]>
 
 // 获取某个 Session 的事件（每条 trace 的 VLM 结论）
-invoke('get_activity_session_events', {
-  session_id: number,
-  limit?: number,
-  offset?: number,
-}): Promise<ActivitySessionEvent[]>
-
 // 获取截图图片数据（用于 UI 展示）
 // 前端推荐用 Blob URL 渲染：URL.createObjectURL(new Blob([bytes], { type: mime }))
 invoke('get_image_data', {
@@ -141,12 +135,20 @@ interface Trace {
   ocr_text: string | null
   activity_session_id: number | null
   is_key_action: boolean
+  vlm_summary: string | null
+  vlm_action_description: string | null
+  vlm_activity_type: string | null
+  vlm_confidence: number | null
+  vlm_entities_json: string | null
+  vlm_raw_json: string | null
   created_at: number
 }
 
 interface ActivitySession {
   id: number
   app_name: string
+  title: string | null
+  description: string | null
   start_time: number
   end_time: number
   start_trace_id: number | null
@@ -157,20 +159,6 @@ interface ActivitySession {
   key_actions_json: string | null
   created_at: number
   updated_at: number
-}
-
-interface ActivitySessionEvent {
-  id: number
-  session_id: number
-  trace_id: number
-  timestamp: number
-  summary: string | null
-  action_description: string | null
-  activity_type: string | null
-  confidence: number | null
-  entities_json: string | null
-  is_key_action: boolean
-  created_at: number
 }
 
 interface SearchResult {

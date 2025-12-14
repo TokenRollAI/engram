@@ -188,7 +188,7 @@ pub struct VlmTaskStatus {
              ├─► 调用 VLM 分析（带 context）
              ├─► 提取轻量 ocr_text
              ├─► 更新 traces.ocr_text
-             ├─► 写入 session_events + 更新 activity_sessions
+             ├─► 写回 traces.vlm_* + 更新 activity_sessions
              ├─► 生成嵌入向量
              └─► 更新数据库 embedding
 ```
@@ -213,6 +213,8 @@ Input: Trace { id, image_path, ocr_text=NULL, ... }
   │        entities: Vec<String>,
   │        is_key_action: bool,
   │        action_description: Option<String>,
+  │        session_title: Option<String>,
+  │        session_description: Option<String>,
   │        confidence: f32,
   │      }
   │
@@ -222,12 +224,9 @@ Input: Trace { id, image_path, ocr_text=NULL, ... }
   ├─► 4. 更新数据库（trace 轻量字段）
   │      db.update_trace_ocr_text(trace.id, &ocr_text)?
   │
-  ├─► 5. 同步 VLM 结论到 Session（对外核心）
-  │      db.append_activity_session_event(
-  │        session_id, trace.id, trace.timestamp,
-  │        summary, action_description, activity_type, confidence,
-  │        entities, raw_json, is_key_action
-  │      )?
+  ├─► 5. 同步 VLM 结论（对外核心）
+  │      - 写回 traces.vlm_* + traces.is_key_action
+  │      - 增量更新 activity_sessions.title/description/context_text/entities_json/key_actions_json
   │
   ├─► 6. 生成嵌入向量
   │      embedding = embedder.embed(&ocr_text).await?

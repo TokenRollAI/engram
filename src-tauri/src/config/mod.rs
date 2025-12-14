@@ -191,7 +191,10 @@ impl AppConfig {
             info!("Config loaded from: {}", path.display());
             Ok(config)
         } else {
-            info!("Config file not found, creating default at: {}", path.display());
+            info!(
+                "Config file not found, creating default at: {}",
+                path.display()
+            );
             let config = Self::default();
             config.save()?;
             Ok(config)
@@ -201,7 +204,9 @@ impl AppConfig {
     /// 保存配置到文件
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
-        let dir = path.parent().ok_or_else(|| anyhow!("Invalid config path"))?;
+        let dir = path
+            .parent()
+            .ok_or_else(|| anyhow!("Invalid config path"))?;
 
         // 确保目录存在
         if !dir.exists() {

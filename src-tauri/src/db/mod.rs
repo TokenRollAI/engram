@@ -24,6 +24,28 @@ pub struct Database {
 }
 
 impl Database {
+    fn trace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Trace> {
+        Ok(Trace {
+            id: row.get(0)?,
+            timestamp: row.get(1)?,
+            image_path: row.get(2)?,
+            app_name: row.get(3)?,
+            window_title: row.get(4)?,
+            is_fullscreen: row.get(5)?,
+            is_idle: row.get(6)?,
+            ocr_text: row.get(7)?,
+            activity_session_id: row.get(8)?,
+            is_key_action: row.get(9)?,
+            vlm_summary: row.get(10)?,
+            vlm_action_description: row.get(11)?,
+            vlm_activity_type: row.get(12)?,
+            vlm_confidence: row.get(13)?,
+            vlm_entities_json: row.get(14)?,
+            vlm_raw_json: row.get(15)?,
+            created_at: row.get(16)?,
+        })
+    }
+
     /// 创建或打开数据库
     pub fn new() -> Result<Self> {
         // 注册 sqlite-vec 扩展（必须在打开任何连接之前）
@@ -132,9 +154,9 @@ impl Database {
             r#"
             INSERT INTO traces (
                 timestamp, image_path, app_name, window_title,
-                is_fullscreen, window_x, window_y, window_w, window_h,
+                is_fullscreen,
                 is_idle, ocr_text, activity_session_id, phash
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
             rusqlite::params![
                 trace.timestamp,
@@ -142,10 +164,6 @@ impl Database {
                 trace.app_name,
                 trace.window_title,
                 trace.is_fullscreen,
-                trace.window_x,
-                trace.window_y,
-                trace.window_w,
-                trace.window_h,
                 trace.is_idle,
                 trace.ocr_text,
                 session_id,
@@ -257,8 +275,10 @@ impl Database {
         let mut stmt = conn.prepare(
             r#"
             SELECT id, timestamp, image_path, app_name, window_title,
-                   is_fullscreen, window_x, window_y, window_w, window_h,
-                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
+                   is_fullscreen,
+                   is_idle, ocr_text, activity_session_id, is_key_action,
+                   vlm_summary, vlm_action_description, vlm_activity_type, vlm_confidence, vlm_entities_json, vlm_raw_json,
+                   created_at
             FROM traces
             WHERE timestamp BETWEEN ?1 AND ?2
             ORDER BY timestamp DESC
@@ -268,25 +288,7 @@ impl Database {
 
         let traces = stmt.query_map(
             rusqlite::params![start_time, end_time, limit, offset],
-            |row| {
-                Ok(Trace {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    image_path: row.get(2)?,
-                    app_name: row.get(3)?,
-                    window_title: row.get(4)?,
-                    is_fullscreen: row.get(5)?,
-                    window_x: row.get(6)?,
-                    window_y: row.get(7)?,
-                    window_w: row.get(8)?,
-                    window_h: row.get(9)?,
-                    is_idle: row.get(10)?,
-                    ocr_text: row.get(11)?,
-                    activity_session_id: row.get(12)?,
-                    is_key_action: row.get(13)?,
-                    created_at: row.get(14)?,
-                })
-            },
+            |row| Self::trace_from_row(row),
         )?;
 
         let mut result = Vec::new();
@@ -313,8 +315,10 @@ impl Database {
                 (
                     r#"
                     SELECT id, timestamp, image_path, app_name, window_title,
-                           is_fullscreen, window_x, window_y, window_w, window_h,
-                           is_idle, ocr_text, activity_session_id, is_key_action, created_at
+                           is_fullscreen,
+                           is_idle, ocr_text, activity_session_id, is_key_action,
+                           vlm_summary, vlm_action_description, vlm_activity_type, vlm_confidence, vlm_entities_json, vlm_raw_json,
+                           created_at
                     FROM traces
                     WHERE timestamp BETWEEN ?1 AND ?2
                     ORDER BY timestamp DESC
@@ -331,8 +335,10 @@ impl Database {
                     format!(
                         r#"
                         SELECT id, timestamp, image_path, app_name, window_title,
-                               is_fullscreen, window_x, window_y, window_w, window_h,
-                               is_idle, ocr_text, activity_session_id, is_key_action, created_at
+                               is_fullscreen,
+                               is_idle, ocr_text, activity_session_id, is_key_action,
+                               vlm_summary, vlm_action_description, vlm_activity_type, vlm_confidence, vlm_entities_json, vlm_raw_json,
+                               created_at
                         FROM traces
                         WHERE timestamp BETWEEN ?1 AND ?2
                           AND app_name IN ({})
@@ -348,8 +354,10 @@ impl Database {
             (
                 r#"
                 SELECT id, timestamp, image_path, app_name, window_title,
-                       is_fullscreen, window_x, window_y, window_w, window_h,
-                       is_idle, ocr_text, activity_session_id, is_key_action, created_at
+                       is_fullscreen,
+                       is_idle, ocr_text, activity_session_id, is_key_action,
+                       vlm_summary, vlm_action_description, vlm_activity_type, vlm_confidence, vlm_entities_json, vlm_raw_json,
+                       created_at
                 FROM traces
                 WHERE timestamp BETWEEN ?1 AND ?2
                 ORDER BY timestamp DESC
@@ -372,45 +380,11 @@ impl Database {
             }
             let params_refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|p| p.as_ref()).collect();
-            stmt.query_map(params_refs.as_slice(), |row| {
-                Ok(Trace {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    image_path: row.get(2)?,
-                    app_name: row.get(3)?,
-                    window_title: row.get(4)?,
-                    is_fullscreen: row.get(5)?,
-                    window_x: row.get(6)?,
-                    window_y: row.get(7)?,
-                    window_w: row.get(8)?,
-                    window_h: row.get(9)?,
-                    is_idle: row.get(10)?,
-                    ocr_text: row.get(11)?,
-                    activity_session_id: row.get(12)?,
-                    is_key_action: row.get(13)?,
-                    created_at: row.get(14)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?
+            stmt.query_map(params_refs.as_slice(), |row| Self::trace_from_row(row))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
         } else {
             stmt.query_map(rusqlite::params![start_time, end_time, limit], |row| {
-                Ok(Trace {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    image_path: row.get(2)?,
-                    app_name: row.get(3)?,
-                    window_title: row.get(4)?,
-                    is_fullscreen: row.get(5)?,
-                    window_x: row.get(6)?,
-                    window_y: row.get(7)?,
-                    window_w: row.get(8)?,
-                    window_h: row.get(9)?,
-                    is_idle: row.get(10)?,
-                    ocr_text: row.get(11)?,
-                    activity_session_id: row.get(12)?,
-                    is_key_action: row.get(13)?,
-                    created_at: row.get(14)?,
-                })
+                Self::trace_from_row(row)
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
         };
@@ -424,8 +398,10 @@ impl Database {
         let mut stmt = conn.prepare(
             r#"
             SELECT t.id, t.timestamp, t.image_path, t.app_name, t.window_title,
-                   t.is_fullscreen, t.window_x, t.window_y, t.window_w, t.window_h,
-                   t.is_idle, t.ocr_text, t.activity_session_id, t.is_key_action, t.created_at
+                   t.is_fullscreen,
+                   t.is_idle, t.ocr_text, t.activity_session_id, t.is_key_action,
+                   t.vlm_summary, t.vlm_action_description, t.vlm_activity_type, t.vlm_confidence, t.vlm_entities_json, t.vlm_raw_json,
+                   t.created_at
             FROM traces t
             JOIN traces_fts fts ON t.id = fts.rowid
             WHERE traces_fts MATCH ?1
@@ -435,23 +411,7 @@ impl Database {
         )?;
 
         let traces = stmt.query_map(rusqlite::params![query, limit], |row| {
-            Ok(Trace {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                image_path: row.get(2)?,
-                app_name: row.get(3)?,
-                window_title: row.get(4)?,
-                is_fullscreen: row.get(5)?,
-                window_x: row.get(6)?,
-                window_y: row.get(7)?,
-                window_w: row.get(8)?,
-                window_h: row.get(9)?,
-                is_idle: row.get(10)?,
-                ocr_text: row.get(11)?,
-                activity_session_id: row.get(12)?,
-                is_key_action: row.get(13)?,
-                created_at: row.get(14)?,
-            })
+            Self::trace_from_row(row)
         })?;
 
         let mut result = Vec::new();
@@ -556,7 +516,7 @@ impl Database {
                 (
                     r#"
                     SELECT
-                        id, app_name, start_time, end_time,
+                        id, app_name, title, description, start_time, end_time,
                         start_trace_id, end_trace_id, trace_count,
                         context_text, entities_json, key_actions_json,
                         created_at, updated_at
@@ -575,7 +535,7 @@ impl Database {
                     format!(
                         r#"
                         SELECT
-                            id, app_name, start_time, end_time,
+                            id, app_name, title, description, start_time, end_time,
                             start_trace_id, end_trace_id, trace_count,
                             context_text, entities_json, key_actions_json,
                             created_at, updated_at
@@ -594,7 +554,7 @@ impl Database {
             (
                 r#"
                 SELECT
-                    id, app_name, start_time, end_time,
+                    id, app_name, title, description, start_time, end_time,
                     start_trace_id, end_trace_id, trace_count,
                     context_text, entities_json, key_actions_json,
                     created_at, updated_at
@@ -627,16 +587,18 @@ impl Database {
                 Ok(ActivitySession {
                     id: row.get(0)?,
                     app_name: row.get(1)?,
-                    start_time: row.get(2)?,
-                    end_time: row.get(3)?,
-                    start_trace_id: row.get(4)?,
-                    end_trace_id: row.get(5)?,
-                    trace_count: row.get::<_, i64>(6)? as u32,
-                    context_text: row.get(7)?,
-                    entities_json: row.get(8)?,
-                    key_actions_json: row.get(9)?,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
+                    title: row.get(2)?,
+                    description: row.get(3)?,
+                    start_time: row.get(4)?,
+                    end_time: row.get(5)?,
+                    start_trace_id: row.get(6)?,
+                    end_trace_id: row.get(7)?,
+                    trace_count: row.get::<_, i64>(8)? as u32,
+                    context_text: row.get(9)?,
+                    entities_json: row.get(10)?,
+                    key_actions_json: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -647,16 +609,18 @@ impl Database {
                     Ok(ActivitySession {
                         id: row.get(0)?,
                         app_name: row.get(1)?,
-                        start_time: row.get(2)?,
-                        end_time: row.get(3)?,
-                        start_trace_id: row.get(4)?,
-                        end_trace_id: row.get(5)?,
-                        trace_count: row.get::<_, i64>(6)? as u32,
-                        context_text: row.get(7)?,
-                        entities_json: row.get(8)?,
-                        key_actions_json: row.get(9)?,
-                        created_at: row.get(10)?,
-                        updated_at: row.get(11)?,
+                        title: row.get(2)?,
+                        description: row.get(3)?,
+                        start_time: row.get(4)?,
+                        end_time: row.get(5)?,
+                        start_trace_id: row.get(6)?,
+                        end_trace_id: row.get(7)?,
+                        trace_count: row.get::<_, i64>(8)? as u32,
+                        context_text: row.get(9)?,
+                        entities_json: row.get(10)?,
+                        key_actions_json: row.get(11)?,
+                        created_at: row.get(12)?,
+                        updated_at: row.get(13)?,
                     })
                 },
             )?
@@ -671,7 +635,7 @@ impl Database {
         let result = conn.query_row(
             r#"
             SELECT
-                id, app_name, start_time, end_time,
+                id, app_name, title, description, start_time, end_time,
                 start_trace_id, end_trace_id, trace_count,
                 context_text, entities_json, key_actions_json,
                 created_at, updated_at
@@ -683,16 +647,18 @@ impl Database {
                 Ok(ActivitySession {
                     id: row.get(0)?,
                     app_name: row.get(1)?,
-                    start_time: row.get(2)?,
-                    end_time: row.get(3)?,
-                    start_trace_id: row.get(4)?,
-                    end_trace_id: row.get(5)?,
-                    trace_count: row.get::<_, i64>(6)? as u32,
-                    context_text: row.get(7)?,
-                    entities_json: row.get(8)?,
-                    key_actions_json: row.get(9)?,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
+                    title: row.get(2)?,
+                    description: row.get(3)?,
+                    start_time: row.get(4)?,
+                    end_time: row.get(5)?,
+                    start_trace_id: row.get(6)?,
+                    end_trace_id: row.get(7)?,
+                    trace_count: row.get::<_, i64>(8)? as u32,
+                    context_text: row.get(9)?,
+                    entities_json: row.get(10)?,
+                    key_actions_json: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
                 })
             },
         );
@@ -714,8 +680,10 @@ impl Database {
         let mut stmt = conn.prepare(
             r#"
             SELECT id, timestamp, image_path, app_name, window_title,
-                   is_fullscreen, window_x, window_y, window_w, window_h,
-                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
+                   is_fullscreen,
+                   is_idle, ocr_text, activity_session_id, is_key_action,
+                   vlm_summary, vlm_action_description, vlm_activity_type, vlm_confidence, vlm_entities_json, vlm_raw_json,
+                   created_at
             FROM traces
             WHERE activity_session_id = ?1
             ORDER BY timestamp DESC
@@ -724,23 +692,7 @@ impl Database {
         )?;
 
         let traces = stmt.query_map(rusqlite::params![session_id, limit, offset], |row| {
-            Ok(Trace {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                image_path: row.get(2)?,
-                app_name: row.get(3)?,
-                window_title: row.get(4)?,
-                is_fullscreen: row.get(5)?,
-                window_x: row.get(6)?,
-                window_y: row.get(7)?,
-                window_w: row.get(8)?,
-                window_h: row.get(9)?,
-                is_idle: row.get(10)?,
-                ocr_text: row.get(11)?,
-                activity_session_id: row.get(12)?,
-                is_key_action: row.get(13)?,
-                created_at: row.get(14)?,
-            })
+            Self::trace_from_row(row)
         })?;
 
         let mut result = Vec::new();
@@ -760,8 +712,10 @@ impl Database {
         let mut stmt = conn.prepare(
             r#"
             SELECT id, timestamp, image_path, app_name, window_title,
-                   is_fullscreen, window_x, window_y, window_w, window_h,
-                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
+                   is_fullscreen,
+                   is_idle, ocr_text, activity_session_id, is_key_action,
+                   vlm_summary, vlm_action_description, vlm_activity_type, vlm_confidence, vlm_entities_json, vlm_raw_json,
+                   created_at
             FROM traces
             WHERE activity_session_id = ?1
               AND timestamp < ?2
@@ -772,25 +726,7 @@ impl Database {
 
         let traces = stmt.query_map(
             rusqlite::params![session_id, before_timestamp, limit],
-            |row| {
-                Ok(Trace {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    image_path: row.get(2)?,
-                    app_name: row.get(3)?,
-                    window_title: row.get(4)?,
-                    is_fullscreen: row.get(5)?,
-                    window_x: row.get(6)?,
-                    window_y: row.get(7)?,
-                    window_w: row.get(8)?,
-                    window_h: row.get(9)?,
-                    is_idle: row.get(10)?,
-                    ocr_text: row.get(11)?,
-                    activity_session_id: row.get(12)?,
-                    is_key_action: row.get(13)?,
-                    created_at: row.get(14)?,
-                })
-            },
+            |row| Self::trace_from_row(row),
         )?;
 
         let mut result = Vec::new();
@@ -800,54 +736,9 @@ impl Database {
         Ok(result)
     }
 
-    pub fn get_activity_session_events(
+    pub fn update_trace_vlm_analysis(
         &self,
-        session_id: i64,
-        limit: u32,
-        offset: u32,
-    ) -> Result<Vec<ActivitySessionEvent>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT
-                id, session_id, trace_id, timestamp,
-                summary, action_description, activity_type, confidence, entities_json, is_key_action,
-                created_at
-            FROM activity_session_events
-            WHERE session_id = ?1
-            ORDER BY timestamp DESC
-            LIMIT ?2 OFFSET ?3
-            "#,
-        )?;
-
-        let rows = stmt.query_map(rusqlite::params![session_id, limit, offset], |row| {
-            Ok(ActivitySessionEvent {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                trace_id: row.get(2)?,
-                timestamp: row.get(3)?,
-                summary: row.get(4)?,
-                action_description: row.get(5)?,
-                activity_type: row.get(6)?,
-                confidence: row.get(7)?,
-                entities_json: row.get(8)?,
-                is_key_action: row.get(9)?,
-                created_at: row.get(10)?,
-            })
-        })?;
-
-        let mut result = Vec::new();
-        for r in rows {
-            result.push(r?);
-        }
-        Ok(result)
-    }
-
-    pub fn append_activity_session_event(
-        &self,
-        session_id: i64,
         trace_id: i64,
-        timestamp: i64,
         summary: Option<&str>,
         action_description: Option<&str>,
         activity_type: Option<&str>,
@@ -856,44 +747,57 @@ impl Database {
         raw_json: Option<&str>,
         is_key_action: bool,
     ) -> Result<()> {
-        use chrono::{DateTime, Local};
-        use serde_json::{Map, Value};
-
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-
+        let conn = self.conn.lock().unwrap();
         let entities_json = if entities.is_empty() {
             None
         } else {
             Some(serde_json::to_string(entities).unwrap_or_else(|_| "[]".to_string()))
         };
-
-        tx.execute(
+        conn.execute(
             r#"
-            INSERT INTO activity_session_events (
-                session_id, trace_id, timestamp,
-                summary, action_description, activity_type, confidence,
-                entities_json, raw_json, is_key_action
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            UPDATE traces
+            SET
+                is_key_action = ?1,
+                vlm_summary = ?2,
+                vlm_action_description = ?3,
+                vlm_activity_type = ?4,
+                vlm_confidence = ?5,
+                vlm_entities_json = ?6,
+                vlm_raw_json = ?7
+            WHERE id = ?8
             "#,
             rusqlite::params![
-                session_id,
-                trace_id,
-                timestamp,
+                is_key_action,
                 summary,
                 action_description,
                 activity_type,
                 confidence,
                 entities_json,
                 raw_json,
-                is_key_action,
+                trace_id
             ],
         )?;
+        Ok(())
+    }
 
-        tx.execute(
-            "UPDATE traces SET is_key_action = ?1 WHERE id = ?2",
-            rusqlite::params![is_key_action, trace_id],
-        )?;
+    pub fn update_activity_session_from_vlm(
+        &self,
+        session_id: i64,
+        trace_id: i64,
+        timestamp: i64,
+        summary: Option<&str>,
+        action_description: Option<&str>,
+        activity_type: Option<&str>,
+        entities: &[String],
+        is_key_action: bool,
+        session_title: Option<&str>,
+        session_description: Option<&str>,
+    ) -> Result<()> {
+        use chrono::{DateTime, Local};
+        use serde_json::{Map, Value};
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
 
         // 读取并合并 entities_json（计数）
         let existing_entities_json: Option<String> = tx
@@ -923,7 +827,7 @@ impl Database {
             Some(Value::Object(counts).to_string())
         };
 
-        // 追加 context_text（裁剪到一定长度，防止无限增长）
+        // 追加 context_text
         let existing_context: Option<String> = tx
             .query_row(
                 "SELECT context_text FROM activity_sessions WHERE id = ?1",
@@ -949,14 +853,15 @@ impl Database {
             appended.push('\n');
         }
         if let Some(s) = summary {
-            if !s.trim().is_empty() {
-                appended.push_str(&format!("[{}] {}\n", time_str, s.trim()));
+            let s = s.trim();
+            if !s.is_empty() {
+                appended.push_str(&format!("[{}] {}\n", time_str, s));
             }
         }
 
-        const MAX_CONTEXT_CHARS: usize = 20_000;
+        const MAX_CONTEXT_CHARS: usize = 262_144; // 256K
         if appended.chars().count() > MAX_CONTEXT_CHARS {
-            let tail: String = appended
+            appended = appended
                 .chars()
                 .rev()
                 .take(MAX_CONTEXT_CHARS)
@@ -964,10 +869,9 @@ impl Database {
                 .chars()
                 .rev()
                 .collect();
-            appended = tail;
         }
 
-        // key_actions_json：仅追加关键行为（裁剪长度）
+        // key_actions_json：仅追加关键行为（限制长度，避免无限增长）
         let mut next_key_actions: Option<String> = existing_key_actions;
         if is_key_action {
             let mut arr = next_key_actions
@@ -990,34 +894,38 @@ impl Database {
                 "entities": entities,
             });
 
-            if arr
-                .last()
-                .map(|v| v.get("trace_id").and_then(|x| x.as_i64()) == Some(trace_id))
-                .unwrap_or(false)
+            if !arr
+                .iter()
+                .any(|v| v.get("trace_id").and_then(|x| x.as_i64()) == Some(trace_id))
             {
-                // no-op
-            } else {
                 arr.push(action);
             }
 
-            const MAX_KEY_ACTIONS: usize = 80;
+            const MAX_KEY_ACTIONS: usize = 200;
             if arr.len() > MAX_KEY_ACTIONS {
                 arr = arr.split_off(arr.len() - MAX_KEY_ACTIONS);
             }
             next_key_actions = Some(Value::Array(arr).to_string());
         }
 
+        let next_title = session_title.map(str::trim).filter(|s| !s.is_empty());
+        let next_description = session_description.map(str::trim).filter(|s| !s.is_empty());
+
         tx.execute(
             r#"
             UPDATE activity_sessions
             SET
-                context_text = ?1,
-                entities_json = ?2,
-                key_actions_json = ?3,
+                title = COALESCE(?1, title),
+                description = COALESCE(?2, description),
+                context_text = ?3,
+                entities_json = ?4,
+                key_actions_json = ?5,
                 updated_at = (strftime('%s', 'now') * 1000)
-            WHERE id = ?4
+            WHERE id = ?6
             "#,
             rusqlite::params![
+                next_title,
+                next_description,
                 if appended.is_empty() {
                     None
                 } else {
@@ -1258,8 +1166,10 @@ impl Database {
         let mut stmt = conn.prepare(
             r#"
             SELECT id, timestamp, image_path, app_name, window_title,
-                   is_fullscreen, window_x, window_y, window_w, window_h,
-                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
+                   is_fullscreen,
+                   is_idle, ocr_text, activity_session_id, is_key_action,
+                   vlm_summary, vlm_action_description, vlm_activity_type, vlm_confidence, vlm_entities_json, vlm_raw_json,
+                   created_at
             FROM traces
             WHERE ocr_text IS NULL
             ORDER BY timestamp DESC
@@ -1267,25 +1177,7 @@ impl Database {
             "#,
         )?;
 
-        let traces = stmt.query_map([limit], |row| {
-            Ok(Trace {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                image_path: row.get(2)?,
-                app_name: row.get(3)?,
-                window_title: row.get(4)?,
-                is_fullscreen: row.get(5)?,
-                window_x: row.get(6)?,
-                window_y: row.get(7)?,
-                window_w: row.get(8)?,
-                window_h: row.get(9)?,
-                is_idle: row.get(10)?,
-                ocr_text: row.get(11)?,
-                activity_session_id: row.get(12)?,
-                is_key_action: row.get(13)?,
-                created_at: row.get(14)?,
-            })
-        })?;
+        let traces = stmt.query_map([limit], |row| Self::trace_from_row(row))?;
 
         let mut result = Vec::new();
         for trace in traces {
@@ -1300,8 +1192,10 @@ impl Database {
         let mut stmt = conn.prepare(
             r#"
             SELECT id, timestamp, image_path, app_name, window_title,
-                   is_fullscreen, window_x, window_y, window_w, window_h,
-                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
+                   is_fullscreen,
+                   is_idle, ocr_text, activity_session_id, is_key_action,
+                   vlm_summary, vlm_action_description, vlm_activity_type, vlm_confidence, vlm_entities_json, vlm_raw_json,
+                   created_at
             FROM traces
             WHERE ocr_text IS NOT NULL AND embedding IS NULL
             ORDER BY timestamp DESC
@@ -1309,25 +1203,7 @@ impl Database {
             "#,
         )?;
 
-        let traces = stmt.query_map([limit], |row| {
-            Ok(Trace {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                image_path: row.get(2)?,
-                app_name: row.get(3)?,
-                window_title: row.get(4)?,
-                is_fullscreen: row.get(5)?,
-                window_x: row.get(6)?,
-                window_y: row.get(7)?,
-                window_w: row.get(8)?,
-                window_h: row.get(9)?,
-                is_idle: row.get(10)?,
-                ocr_text: row.get(11)?,
-                activity_session_id: row.get(12)?,
-                is_key_action: row.get(13)?,
-                created_at: row.get(14)?,
-            })
-        })?;
+        let traces = stmt.query_map([limit], |row| Self::trace_from_row(row))?;
 
         let mut result = Vec::new();
         for trace in traces {
@@ -1356,8 +1232,10 @@ impl Database {
             r#"
             SELECT
                 t.id, t.timestamp, t.image_path, t.app_name, t.window_title,
-                t.is_fullscreen, t.window_x, t.window_y, t.window_w, t.window_h,
-                t.is_idle, t.ocr_text, t.activity_session_id, t.is_key_action, t.created_at,
+                t.is_fullscreen,
+                t.is_idle, t.ocr_text, t.activity_session_id, t.is_key_action,
+                t.vlm_summary, t.vlm_action_description, t.vlm_activity_type, t.vlm_confidence, t.vlm_entities_json, t.vlm_raw_json,
+                t.created_at,
                 v.distance
             FROM traces_vec v
             INNER JOIN traces t ON v.trace_id = t.id
@@ -1368,31 +1246,12 @@ impl Database {
         )?;
 
         let traces = stmt.query_map(rusqlite::params![query_bytes, limit], |row| {
-            let distance: f32 = row.get(15)?;
+            let distance: f32 = row.get(17)?;
             // 将距离转换为相似度（距离越小，相似度越高）
             // 使用 1 / (1 + distance) 转换
             let similarity = 1.0 / (1.0 + distance);
 
-            Ok((
-                Trace {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    image_path: row.get(2)?,
-                    app_name: row.get(3)?,
-                    window_title: row.get(4)?,
-                    is_fullscreen: row.get(5)?,
-                    window_x: row.get(6)?,
-                    window_y: row.get(7)?,
-                    window_w: row.get(8)?,
-                    window_h: row.get(9)?,
-                    is_idle: row.get(10)?,
-                    ocr_text: row.get(11)?,
-                    activity_session_id: row.get(12)?,
-                    is_key_action: row.get(13)?,
-                    created_at: row.get(14)?,
-                },
-                similarity,
-            ))
+            Ok((Self::trace_from_row(row)?, similarity))
         })?;
 
         let mut results = Vec::new();
@@ -1839,8 +1698,10 @@ impl Database {
         let mut stmt = conn.prepare(
             r#"
             SELECT t.id, t.timestamp, t.image_path, t.app_name, t.window_title,
-                   t.is_fullscreen, t.window_x, t.window_y, t.window_w, t.window_h,
-                   t.is_idle, t.ocr_text, t.activity_session_id, t.is_key_action, t.created_at
+                   t.is_fullscreen,
+                   t.is_idle, t.ocr_text, t.activity_session_id, t.is_key_action,
+                   t.vlm_summary, t.vlm_action_description, t.vlm_activity_type, t.vlm_confidence, t.vlm_entities_json, t.vlm_raw_json,
+                   t.created_at
             FROM traces t
             JOIN entity_traces et ON t.id = et.trace_id
             WHERE et.entity_id = ?1
@@ -1850,23 +1711,7 @@ impl Database {
         )?;
 
         let traces = stmt.query_map(rusqlite::params![entity_id, limit], |row| {
-            Ok(Trace {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                image_path: row.get(2)?,
-                app_name: row.get(3)?,
-                window_title: row.get(4)?,
-                is_fullscreen: row.get(5)?,
-                window_x: row.get(6)?,
-                window_y: row.get(7)?,
-                window_w: row.get(8)?,
-                window_h: row.get(9)?,
-                is_idle: row.get(10)?,
-                ocr_text: row.get(11)?,
-                activity_session_id: row.get(12)?,
-                is_key_action: row.get(13)?,
-                created_at: row.get(14)?,
-            })
+            Self::trace_from_row(row)
         })?;
 
         let mut result = Vec::new();

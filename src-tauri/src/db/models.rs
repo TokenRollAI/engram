@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct ActivitySession {
     pub id: i64,
     pub app_name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
     pub start_time: i64,
     pub end_time: i64,
     pub start_trace_id: Option<i64>,
@@ -17,22 +19,6 @@ pub struct ActivitySession {
     pub key_actions_json: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-/// 会话事件：单条 trace 的 VLM 结论
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActivitySessionEvent {
-    pub id: i64,
-    pub session_id: i64,
-    pub trace_id: i64,
-    pub timestamp: i64,
-    pub summary: Option<String>,
-    pub action_description: Option<String>,
-    pub activity_type: Option<String>,
-    pub confidence: Option<f32>,
-    pub entities_json: Option<String>,
-    pub is_key_action: bool,
-    pub created_at: i64,
 }
 
 /// Chat 线程（与“活动 Session”概念区分）
@@ -63,10 +49,6 @@ pub struct NewTrace {
     pub app_name: Option<String>,
     pub window_title: Option<String>,
     pub is_fullscreen: bool,
-    pub window_x: Option<i32>,
-    pub window_y: Option<i32>,
-    pub window_w: Option<u32>,
-    pub window_h: Option<u32>,
     pub is_idle: bool,
     pub ocr_text: Option<String>,
     pub phash: Option<Vec<u8>>,
@@ -81,14 +63,16 @@ pub struct Trace {
     pub app_name: Option<String>,
     pub window_title: Option<String>,
     pub is_fullscreen: bool,
-    pub window_x: Option<i32>,
-    pub window_y: Option<i32>,
-    pub window_w: Option<u32>,
-    pub window_h: Option<u32>,
     pub is_idle: bool,
     pub ocr_text: Option<String>,
     pub activity_session_id: Option<i64>,
     pub is_key_action: bool,
+    pub vlm_summary: Option<String>,
+    pub vlm_action_description: Option<String>,
+    pub vlm_activity_type: Option<String>,
+    pub vlm_confidence: Option<f32>,
+    pub vlm_entities_json: Option<String>,
+    pub vlm_raw_json: Option<String>,
     pub created_at: i64,
 }
 

@@ -302,6 +302,36 @@ impl VlmTask {
             let mut parts: Vec<String> = Vec::new();
 
             if let Some(s) = session.as_ref() {
+                parts.push(format!(
+                    "【Session Meta】\napp_name: {}\nstart: {}\nend: {}\ntrace_count: {}",
+                    s.app_name,
+                    chrono::DateTime::from_timestamp_millis(s.start_time)
+                        .map(|t| t
+                            .with_timezone(&chrono::Local)
+                            .format("%m-%d %H:%M")
+                            .to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    chrono::DateTime::from_timestamp_millis(s.end_time)
+                        .map(|t| t
+                            .with_timezone(&chrono::Local)
+                            .format("%m-%d %H:%M")
+                            .to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    s.trace_count
+                ));
+
+                if let Some(title) = s.title.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                    parts.push(format!("【Session Title】\n{}", title));
+                }
+                if let Some(desc) = s
+                    .description
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
+                {
+                    parts.push(format!("【Session Description】\n{}", desc));
+                }
+
                 if let Some(ctx) = s.context_text.as_deref() {
                     let ctx = ctx.trim();
                     if !ctx.is_empty() {
@@ -312,8 +342,15 @@ impl VlmTask {
                 if let Some(kaj) = s.key_actions_json.as_deref() {
                     let kaj = kaj.trim();
                     if !kaj.is_empty() {
-                        if let Some(formatted) = Self::format_key_actions_for_context(kaj) {
+                        if let Some(formatted) = Self::format_key_actions_for_context(kaj, 30) {
                             parts.push(formatted);
+                        }
+                        if let Some(last3) = Self::format_key_actions_for_context_with_header(
+                            kaj,
+                            3,
+                            "【Last 3 Key Actions（最近3条）】",
+                        ) {
+                            parts.push(last3);
                         }
                     }
                 }
@@ -338,7 +375,22 @@ impl VlmTask {
             if parts.is_empty() {
                 None
             } else {
-                Some(parts.join("\n\n"))
+                const MAX_CONTEXT_CHARS: usize = 262_144; // 256K
+                let joined = parts.join("\n\n");
+                if joined.chars().count() > MAX_CONTEXT_CHARS {
+                    Some(
+                        joined
+                            .chars()
+                            .rev()
+                            .take(MAX_CONTEXT_CHARS)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect(),
+                    )
+                } else {
+                    Some(joined)
+                }
             }
         } else {
             None
@@ -378,26 +430,36 @@ impl VlmTask {
         db.update_trace_embedding(trace.id, &embedding_bytes)?;
 
         // 9. 把 VLM 结论同步到 Session（对外的核心视图）
-        if let Some(sid) = session_id {
-            let is_key_action = description.is_key_action;
-            let action_description = description
-                .action_description
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
+        let is_key_action = description.is_key_action;
+        let action_description = description
+            .action_description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let raw_json = serde_json::to_string(&description).ok();
+        db.update_trace_vlm_analysis(
+            trace.id,
+            Some(description.summary.as_str()),
+            action_description,
+            description.activity_type.as_deref(),
+            Some(description.confidence),
+            &description.entities,
+            raw_json.as_deref(),
+            is_key_action,
+        )?;
 
-            let raw_json = serde_json::to_string(&description).ok();
-            db.append_activity_session_event(
+        if let Some(sid) = session_id {
+            db.update_activity_session_from_vlm(
                 sid,
                 trace.id,
                 trace.timestamp,
                 Some(description.summary.as_str()),
                 action_description,
                 description.activity_type.as_deref(),
-                Some(description.confidence),
                 &description.entities,
-                raw_json.as_deref(),
                 is_key_action,
+                description.session_title.as_deref(),
+                description.session_description.as_deref(),
             )?;
         }
 
@@ -411,7 +473,19 @@ impl VlmTask {
         Ok(())
     }
 
-    fn format_key_actions_for_context(key_actions_json: &str) -> Option<String> {
+    fn format_key_actions_for_context(key_actions_json: &str, take_last: usize) -> Option<String> {
+        Self::format_key_actions_for_context_with_header(
+            key_actions_json,
+            take_last,
+            "【Existing Key Actions（参考）】",
+        )
+    }
+
+    fn format_key_actions_for_context_with_header(
+        key_actions_json: &str,
+        take_last: usize,
+        header: &str,
+    ) -> Option<String> {
         use serde_json::Value;
 
         let v: Value = serde_json::from_str(key_actions_json).ok()?;
@@ -420,9 +494,10 @@ impl VlmTask {
             return None;
         }
 
-        // 只给模型一个简短“已标记关键行为”清单，避免把 JSON 全量塞进上下文。
+        // 只给模型一个“已标记关键行为”清单，避免把 JSON 全量塞进上下文。
         let mut lines: Vec<String> = Vec::new();
-        for it in arr.iter().rev().take(10).rev() {
+        let take_last = take_last.max(1);
+        for it in arr.iter().rev().take(take_last).rev() {
             let ts = it.get("timestamp").and_then(|x| x.as_i64()).unwrap_or(0);
             let text = it
                 .get("action_description")
@@ -438,13 +513,6 @@ impl VlmTask {
                 .unwrap_or_else(|| "?".to_string());
             lines.push(format!("- [{}] {}", time, text));
         }
-
-        let count = arr.len();
-        let header = if count >= 20 {
-            "【Existing Key Actions（已达上限20，请更保守）】"
-        } else {
-            "【Existing Key Actions（参考）】"
-        };
 
         Some(format!("{}\n{}", header, lines.join("\n")))
     }

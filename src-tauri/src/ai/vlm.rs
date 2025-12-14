@@ -34,6 +34,13 @@ pub struct ScreenDescription {
     pub action_description: Option<String>,
     /// 置信度 (0.0 - 1.0)
     pub confidence: f32,
+
+    /// 建议的 Session 标题（可选；如果不需要更新请为 null）
+    #[serde(default)]
+    pub session_title: Option<String>,
+    /// 建议的 Session 描述（可选；如果不需要更新请为 null）
+    #[serde(default)]
+    pub session_description: Option<String>,
 }
 
 /// VLM 引擎配置
@@ -591,6 +598,7 @@ impl VlmEngine {
 
 关键行为标注规则：
 - 只有当“这条行为不重复，且缺少它会让 Session 的结论不完整”时才标记为关键行为
+- 如果它与上下文里已有关键行为（action_description/summary）高度重复，则必须输出 is_key_action=false
 - 如果上下文里已经有很多关键行为，请更保守：每个 Session 总关键行为目标不超过 30 条
 ```json
 {
@@ -601,7 +609,9 @@ impl VlmEngine {
   "entities": ["提取的关键实体：人名、项目名、URL、文件名等"],
   "is_key_action": true,
   "action_description": "如果 is_key_action=true，用一句话客观描述“发生了什么”（不超过80字）；否则为 null",
-  "confidence": 0.95
+  "confidence": 0.95,
+  "session_title": "可选：如果你认为需要更新 Session 标题则给出（20字以内），否则为 null",
+  "session_description": "可选：如果你认为需要更新 Session 描述则给出（100字以内），否则为 null"
 }
 ```"#
     }
@@ -631,6 +641,8 @@ impl VlmEngine {
                     is_key_action: false,
                     action_description: None,
                     confidence: 0.5,
+                    session_title: None,
+                    session_description: None,
                 })
             }
         }

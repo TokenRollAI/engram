@@ -6,10 +6,13 @@ import { zhCN } from "date-fns/locale";
 interface ActivitySession {
   id: number;
   app_name: string;
+  title?: string | null;
+  description?: string | null;
   start_time: number;
   end_time: number;
   trace_count: number;
   context_text: string | null;
+  entities_json?: string | null;
   key_actions_json?: string | null;
 }
 

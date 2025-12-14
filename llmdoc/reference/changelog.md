@@ -79,13 +79,14 @@
 
 ### 变更内容
 
-- 新增“活动 Session”（用户行为聚合）作为对外主视图：`activity_sessions` + `activity_session_events`
-- `traces` 保留为原子事实流，新增 `activity_session_id` 关联；不再在 trace 上保存完整 VLM JSON
-- VlmTask：分析时使用 `Session + 最近1-2条 trace` 作为上下文，并把 VLM 结论增量同步到 Session
-- 新增关键行为：VLM 返回 `is_key_action` + `action_description`，写入 `traces.is_key_action`、`activity_session_events` 并聚合到 `activity_sessions.key_actions_json`
+- 新增“活动 Session”（用户行为聚合）作为对外主视图：`activity_sessions`
+- `traces` 保留为原子事实流，新增 `activity_session_id` 关联；VLM 结构化输出写入 `traces.vlm_*`
+- VlmTask：分析时使用“Session 信息 + 关键行为 + 最近 traces”作为上下文，并把 VLM 结论增量同步到 Session
+- 新增关键行为：VLM 返回 `is_key_action` + `action_description`，写入 `traces.is_key_action` 并聚合到 `activity_sessions.key_actions_json`
 - Chat：新增线程/消息持久化（`chat_threads`/`chat_messages`），响应包含 `thread_id`
 - UI：Timeline 默认按 Session 展示，可展开查看 session 内 traces
 - UI：详情弹窗关闭入口改为右上角 `×`（不再使用底部“关闭”大按钮）
+- Schema: 移除 `activity_session_events`，并将 VLM 结构化结果写回 `traces.vlm_*`；`activity_sessions` 新增 `title/description`；移除 `traces.window_x/y/w/h`
 
 ---
 
