@@ -3,11 +3,15 @@
 //! 支持两种后端：
 //! 1. OpenAI 兼容 API（优先）- 远程或本地服务
 //! 2. 本地 fastembed（回退）- 离线可用
+//!
+//! 性能优化：
+//! - 批量处理：累积文本后批量嵌入
+//! - 内存管理：模型按需加载，空闲时可释放
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 /// 嵌入后端类型
@@ -99,6 +103,10 @@ pub struct TextEmbedder {
     initialized: bool,
     /// 向量维度
     embedding_dim: usize,
+    /// 最后使用时间（用于内存管理）
+    last_used: Mutex<Instant>,
+    /// 模型空闲超时（秒）
+    idle_timeout_secs: u64,
 }
 
 impl TextEmbedder {
@@ -137,6 +145,8 @@ impl TextEmbedder {
             local_model: Mutex::new(None),
             initialized: false,
             embedding_dim,
+            last_used: Mutex::new(Instant::now()),
+            idle_timeout_secs: 300, // 5 分钟空闲后可释放
         }
     }
 
@@ -260,6 +270,9 @@ impl TextEmbedder {
 
     /// 嵌入单个文本（同步版本，仅本地模式）
     pub fn embed_sync(&self, text: &str) -> Result<Vec<f32>> {
+        // 更新最后使用时间
+        *self.last_used.lock().unwrap() = Instant::now();
+
         match &self.backend {
             EmbeddingBackend::Local => {
                 let model_guard = self.local_model.lock().unwrap();
@@ -283,6 +296,9 @@ impl TextEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+
+        // 更新最后使用时间
+        *self.last_used.lock().unwrap() = Instant::now();
 
         match &self.backend {
             EmbeddingBackend::OpenAiCompatible { endpoint, model, api_key } => {
@@ -409,6 +425,56 @@ impl TextEmbedder {
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect()
     }
+
+    /// 检查模型是否空闲过久
+    pub fn is_idle(&self) -> bool {
+        let last_used = *self.last_used.lock().unwrap();
+        last_used.elapsed().as_secs() > self.idle_timeout_secs
+    }
+
+    /// 获取空闲时间（秒）
+    pub fn idle_time_secs(&self) -> u64 {
+        self.last_used.lock().unwrap().elapsed().as_secs()
+    }
+
+    /// 释放本地模型以节省内存
+    pub fn unload_model(&self) {
+        if matches!(self.backend, EmbeddingBackend::Local) {
+            let mut model_guard = self.local_model.lock().unwrap();
+            if model_guard.is_some() {
+                *model_guard = None;
+                info!("Local embedding model unloaded to save memory");
+            }
+        }
+    }
+
+    /// 检查本地模型是否已加载
+    pub fn is_model_loaded(&self) -> bool {
+        self.local_model.lock().unwrap().is_some()
+    }
+
+    /// 确保模型已加载（按需加载）
+    pub fn ensure_model_loaded(&mut self) -> Result<()> {
+        if matches!(self.backend, EmbeddingBackend::Local) {
+            let model_guard = self.local_model.lock().unwrap();
+            if model_guard.is_none() {
+                drop(model_guard); // 释放锁
+                info!("Re-loading local embedding model...");
+                self.init_local_model()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 获取内存使用估计（MB）
+    pub fn estimated_memory_mb(&self) -> f64 {
+        if matches!(self.backend, EmbeddingBackend::Local) && self.is_model_loaded() {
+            // MiniLM-L6 约 90MB
+            90.0
+        } else {
+            0.0
+        }
+    }
 }
 
 impl Default for TextEmbedder {
@@ -421,6 +487,8 @@ impl Default for TextEmbedder {
 pub struct EmbeddingQueue {
     pending: Vec<(String, i64)>,
     batch_size: usize,
+    last_flush: Instant,
+    flush_interval_secs: u64,
 }
 
 impl EmbeddingQueue {
@@ -428,7 +496,15 @@ impl EmbeddingQueue {
         Self {
             pending: Vec::new(),
             batch_size,
+            last_flush: Instant::now(),
+            flush_interval_secs: 30, // 30 秒强制刷新
         }
+    }
+
+    /// 设置强制刷新间隔
+    pub fn with_flush_interval(mut self, secs: u64) -> Self {
+        self.flush_interval_secs = secs;
+        self
     }
 
     pub fn enqueue(&mut self, text: String, trace_id: i64) {
@@ -436,10 +512,12 @@ impl EmbeddingQueue {
     }
 
     pub fn should_flush(&self) -> bool {
-        self.pending.len() >= self.batch_size
+        self.pending.len() >= self.batch_size ||
+        (self.pending.len() > 0 && self.last_flush.elapsed().as_secs() >= self.flush_interval_secs)
     }
 
     pub fn drain(&mut self) -> Vec<(String, i64)> {
+        self.last_flush = Instant::now();
         std::mem::take(&mut self.pending)
     }
 
@@ -449,6 +527,11 @@ impl EmbeddingQueue {
 
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+
+    /// 获取自上次刷新以来的秒数
+    pub fn secs_since_flush(&self) -> u64 {
+        self.last_flush.elapsed().as_secs()
     }
 }
 

@@ -7,8 +7,10 @@ use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use image::RgbImage;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Cursor;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 /// 屏幕描述结果
@@ -98,11 +100,27 @@ impl VlmConfig {
     }
 }
 
+/// VLM 缓存条目
+#[derive(Clone)]
+struct CacheEntry {
+    result: ScreenDescription,
+    timestamp: Instant,
+}
+
+/// VLM 缓存配置
+const CACHE_MAX_SIZE: usize = 100;
+const CACHE_TTL_SECS: u64 = 300; // 5 分钟
+
 /// VLM 引擎
 pub struct VlmEngine {
     config: VlmConfig,
     client: reqwest::Client,
     is_ready: bool,
+    /// 结果缓存（基于图像哈希）
+    cache: Mutex<HashMap<u64, CacheEntry>>,
+    /// 缓存统计
+    cache_hits: Mutex<u64>,
+    cache_misses: Mutex<u64>,
 }
 
 impl VlmEngine {
@@ -115,6 +133,9 @@ impl VlmEngine {
                 .build()
                 .unwrap(),
             is_ready: false,
+            cache: Mutex::new(HashMap::new()),
+            cache_hits: Mutex::new(0),
+            cache_misses: Mutex::new(0),
         }
     }
 
@@ -209,8 +230,128 @@ impl VlmEngine {
             return Err(anyhow!("VLM engine not initialized"));
         }
 
+        // 计算图像哈希用于缓存
+        let image_hash = self.compute_image_hash(image);
+
+        // 检查缓存
+        if let Some(cached) = self.get_cached(image_hash) {
+            *self.cache_hits.lock().unwrap() += 1;
+            debug!("VLM cache hit for hash {}", image_hash);
+            return Ok(cached);
+        }
+
+        *self.cache_misses.lock().unwrap() += 1;
+
         let image_base64 = self.encode_image(image)?;
-        self.call_api(&image_base64).await
+        let result = self.call_api(&image_base64).await?;
+
+        // 存入缓存
+        self.put_cached(image_hash, result.clone());
+
+        Ok(result)
+    }
+
+    /// 分析屏幕截图（带 phash，可利用已有哈希）
+    pub async fn analyze_screen_with_hash(&self, image: &RgbImage, phash: u64) -> Result<ScreenDescription> {
+        if !self.is_ready {
+            return Err(anyhow!("VLM engine not initialized"));
+        }
+
+        // 检查缓存
+        if let Some(cached) = self.get_cached(phash) {
+            *self.cache_hits.lock().unwrap() += 1;
+            debug!("VLM cache hit for phash {}", phash);
+            return Ok(cached);
+        }
+
+        *self.cache_misses.lock().unwrap() += 1;
+
+        let image_base64 = self.encode_image(image)?;
+        let result = self.call_api(&image_base64).await?;
+
+        // 存入缓存
+        self.put_cached(phash, result.clone());
+
+        Ok(result)
+    }
+
+    /// 计算图像哈希（简化的 dHash）
+    fn compute_image_hash(&self, image: &RgbImage) -> u64 {
+        // 缩小到 9x8
+        let small = image::imageops::resize(image, 9, 8, image::imageops::FilterType::Nearest);
+        let gray = image::DynamicImage::ImageRgb8(small).to_luma8();
+
+        let mut hash: u64 = 0;
+        for y in 0..8 {
+            for x in 0..8 {
+                let left = gray.get_pixel(x, y)[0];
+                let right = gray.get_pixel(x + 1, y)[0];
+                if left > right {
+                    hash |= 1 << (y * 8 + x);
+                }
+            }
+        }
+        hash
+    }
+
+    /// 从缓存获取结果
+    fn get_cached(&self, hash: u64) -> Option<ScreenDescription> {
+        let cache = self.cache.lock().unwrap();
+        if let Some(entry) = cache.get(&hash) {
+            // 检查 TTL
+            if entry.timestamp.elapsed().as_secs() < CACHE_TTL_SECS {
+                return Some(entry.result.clone());
+            }
+        }
+        None
+    }
+
+    /// 存入缓存
+    fn put_cached(&self, hash: u64, result: ScreenDescription) {
+        let mut cache = self.cache.lock().unwrap();
+
+        // 如果缓存满了，移除最旧的条目
+        if cache.len() >= CACHE_MAX_SIZE {
+            // 找到最旧的条目
+            if let Some(oldest_key) = cache.iter()
+                .min_by_key(|(_, v)| v.timestamp)
+                .map(|(k, _)| *k)
+            {
+                cache.remove(&oldest_key);
+            }
+        }
+
+        cache.insert(hash, CacheEntry {
+            result,
+            timestamp: Instant::now(),
+        });
+    }
+
+    /// 清除过期缓存
+    pub fn cleanup_cache(&self) {
+        let mut cache = self.cache.lock().unwrap();
+        let before = cache.len();
+        cache.retain(|_, v| v.timestamp.elapsed().as_secs() < CACHE_TTL_SECS);
+        let after = cache.len();
+        if before != after {
+            debug!("VLM cache cleanup: {} -> {} entries", before, after);
+        }
+    }
+
+    /// 获取缓存统计
+    pub fn cache_stats(&self) -> (u64, u64, usize) {
+        let hits = *self.cache_hits.lock().unwrap();
+        let misses = *self.cache_misses.lock().unwrap();
+        let size = self.cache.lock().unwrap().len();
+        (hits, misses, size)
+    }
+
+    /// 清空缓存
+    pub fn clear_cache(&self) {
+        self.cache.lock().unwrap().clear();
+        *self.cache_hits.lock().unwrap() = 0;
+        *self.cache_misses.lock().unwrap() = 0;
+        info!("VLM cache cleared");
     }
 
     /// 调用 OpenAI 兼容 API
