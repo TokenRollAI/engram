@@ -13,6 +13,8 @@ interface Trace {
   is_fullscreen: boolean;
   is_idle: boolean;
   ocr_text: string | null;
+  activity_session_id?: number | null;
+  is_key_action?: boolean;
   created_at: number;
 }
 

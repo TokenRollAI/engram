@@ -60,7 +60,8 @@ impl Database {
             Ok(proj_dirs.data_dir().to_path_buf())
         } else {
             // 回退到用户目录
-            let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+            let home =
+                dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
             Ok(home.join(".engram"))
         }
     }
@@ -71,7 +72,8 @@ impl Database {
         use std::io::BufWriter;
 
         let now = Utc::now();
-        let dir = self.data_dir
+        let dir = self
+            .data_dir
             .join("screenshots")
             .join(now.year().to_string())
             .join(format!("{:02}", now.month()))
@@ -115,14 +117,23 @@ impl Database {
     }
 
     /// 插入痕迹记录
-    pub fn insert_trace(&self, trace: &NewTrace) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
+    pub fn insert_trace(&self, trace: &NewTrace) -> Result<(i64, Option<i64>)> {
+        let mut conn = self.conn.lock().unwrap();
+        let session_id = self.get_or_create_activity_session_id_inner(
+            &conn,
+            trace.timestamp,
+            trace.app_name.as_deref(),
+            trace.is_idle,
+        )?;
+
+        let tx = conn.transaction()?;
+
+        tx.execute(
             r#"
             INSERT INTO traces (
                 timestamp, image_path, app_name, window_title,
                 is_fullscreen, window_x, window_y, window_w, window_h,
-                is_idle, ocr_text, ocr_json, phash
+                is_idle, ocr_text, activity_session_id, phash
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             "#,
             rusqlite::params![
@@ -137,22 +148,117 @@ impl Database {
                 trace.window_h,
                 trace.is_idle,
                 trace.ocr_text,
-                trace.ocr_json,
+                session_id,
                 trace.phash,
             ],
         )?;
 
-        Ok(conn.last_insert_rowid())
+        let trace_id = tx.last_insert_rowid();
+
+        if let Some(sid) = session_id {
+            // 更新 session 的起止 trace 与时间、计数
+            tx.execute(
+                r#"
+                UPDATE activity_sessions
+                SET
+                    start_trace_id = COALESCE(start_trace_id, ?1),
+                    end_trace_id = ?1,
+                    start_time = MIN(start_time, ?2),
+                    end_time = MAX(end_time, ?2),
+                    trace_count = trace_count + 1,
+                    updated_at = (strftime('%s', 'now') * 1000)
+                WHERE id = ?3
+                "#,
+                rusqlite::params![trace_id, trace.timestamp, sid],
+            )?;
+        }
+
+        tx.commit()?;
+
+        Ok((trace_id, session_id))
+    }
+
+    fn get_or_create_activity_session_id_inner(
+        &self,
+        conn: &Connection,
+        timestamp: i64,
+        app_name: Option<&str>,
+        is_idle: bool,
+    ) -> Result<Option<i64>> {
+        if is_idle {
+            return Ok(None);
+        }
+
+        let app_name = match app_name {
+            Some(a) if !a.trim().is_empty() => a,
+            _ => return Ok(None),
+        };
+
+        let gap_ms: i64 = self
+            .get_setting_inner(conn, "session_gap_threshold_ms")?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(300_000);
+
+        // 找到该 app 最近的 session
+        let last: Option<(i64, i64)> = conn
+            .query_row(
+                r#"
+                SELECT id, end_time
+                FROM activity_sessions
+                WHERE app_name = ?1
+                ORDER BY end_time DESC
+                LIMIT 1
+                "#,
+                rusqlite::params![app_name],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
+        if let Some((sid, last_end)) = last {
+            if timestamp - last_end <= gap_ms {
+                return Ok(Some(sid));
+            }
+        }
+
+        // 新建 session
+        conn.execute(
+            r#"
+            INSERT INTO activity_sessions (app_name, start_time, end_time, trace_count)
+            VALUES (?1, ?2, ?2, 0)
+            "#,
+            rusqlite::params![app_name, timestamp],
+        )?;
+        Ok(Some(conn.last_insert_rowid()))
+    }
+
+    fn get_setting_inner(&self, conn: &Connection, key: &str) -> Result<Option<String>> {
+        let result = conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            rusqlite::params![key],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(value) => Ok(Some(value)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// 按时间范围查询痕迹
-    pub fn get_traces(&self, start_time: i64, end_time: i64, limit: u32, offset: u32) -> Result<Vec<Trace>> {
+    pub fn get_traces(
+        &self,
+        start_time: i64,
+        end_time: i64,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             r#"
             SELECT id, timestamp, image_path, app_name, window_title,
                    is_fullscreen, window_x, window_y, window_w, window_h,
-                   is_idle, ocr_text, created_at
+                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
             FROM traces
             WHERE timestamp BETWEEN ?1 AND ?2
             ORDER BY timestamp DESC
@@ -176,7 +282,9 @@ impl Database {
                     window_h: row.get(9)?,
                     is_idle: row.get(10)?,
                     ocr_text: row.get(11)?,
-                    created_at: row.get(12)?,
+                    activity_session_id: row.get(12)?,
+                    is_key_action: row.get(13)?,
+                    created_at: row.get(14)?,
                 })
             },
         )?;
@@ -206,23 +314,25 @@ impl Database {
                     r#"
                     SELECT id, timestamp, image_path, app_name, window_title,
                            is_fullscreen, window_x, window_y, window_w, window_h,
-                           is_idle, ocr_text, created_at
+                           is_idle, ocr_text, activity_session_id, is_key_action, created_at
                     FROM traces
                     WHERE timestamp BETWEEN ?1 AND ?2
                     ORDER BY timestamp DESC
                     LIMIT ?3
-                    "#.to_string(),
+                    "#
+                    .to_string(),
                     false,
                 )
             } else {
                 // 构建 IN 子句的占位符
-                let placeholders: Vec<String> = (0..apps.len()).map(|i| format!("?{}", i + 4)).collect();
+                let placeholders: Vec<String> =
+                    (0..apps.len()).map(|i| format!("?{}", i + 4)).collect();
                 (
                     format!(
                         r#"
                         SELECT id, timestamp, image_path, app_name, window_title,
                                is_fullscreen, window_x, window_y, window_w, window_h,
-                               is_idle, ocr_text, created_at
+                               is_idle, ocr_text, activity_session_id, is_key_action, created_at
                         FROM traces
                         WHERE timestamp BETWEEN ?1 AND ?2
                           AND app_name IN ({})
@@ -239,12 +349,13 @@ impl Database {
                 r#"
                 SELECT id, timestamp, image_path, app_name, window_title,
                        is_fullscreen, window_x, window_y, window_w, window_h,
-                       is_idle, ocr_text, created_at
+                       is_idle, ocr_text, activity_session_id, is_key_action, created_at
                 FROM traces
                 WHERE timestamp BETWEEN ?1 AND ?2
                 ORDER BY timestamp DESC
                 LIMIT ?3
-                "#.to_string(),
+                "#
+                .to_string(),
                 false,
             )
         };
@@ -254,15 +365,13 @@ impl Database {
         // 构建参数
         let traces = if has_filter {
             let apps = app_filter.unwrap();
-            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-                Box::new(start_time),
-                Box::new(end_time),
-                Box::new(limit),
-            ];
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+                vec![Box::new(start_time), Box::new(end_time), Box::new(limit)];
             for app in apps {
                 params.push(Box::new(app.clone()));
             }
-            let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
             stmt.query_map(params_refs.as_slice(), |row| {
                 Ok(Trace {
                     id: row.get(0)?,
@@ -277,7 +386,9 @@ impl Database {
                     window_h: row.get(9)?,
                     is_idle: row.get(10)?,
                     ocr_text: row.get(11)?,
-                    created_at: row.get(12)?,
+                    activity_session_id: row.get(12)?,
+                    is_key_action: row.get(13)?,
+                    created_at: row.get(14)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -296,7 +407,9 @@ impl Database {
                     window_h: row.get(9)?,
                     is_idle: row.get(10)?,
                     ocr_text: row.get(11)?,
-                    created_at: row.get(12)?,
+                    activity_session_id: row.get(12)?,
+                    is_key_action: row.get(13)?,
+                    created_at: row.get(14)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -312,7 +425,7 @@ impl Database {
             r#"
             SELECT t.id, t.timestamp, t.image_path, t.app_name, t.window_title,
                    t.is_fullscreen, t.window_x, t.window_y, t.window_w, t.window_h,
-                   t.is_idle, t.ocr_text, t.created_at
+                   t.is_idle, t.ocr_text, t.activity_session_id, t.is_key_action, t.created_at
             FROM traces t
             JOIN traces_fts fts ON t.id = fts.rowid
             WHERE traces_fts MATCH ?1
@@ -335,7 +448,9 @@ impl Database {
                 window_h: row.get(9)?,
                 is_idle: row.get(10)?,
                 ocr_text: row.get(11)?,
-                created_at: row.get(12)?,
+                activity_session_id: row.get(12)?,
+                is_key_action: row.get(13)?,
+                created_at: row.get(14)?,
             })
         })?;
 
@@ -351,16 +466,20 @@ impl Database {
     pub fn get_storage_stats(&self) -> Result<StorageStats> {
         let conn = self.conn.lock().unwrap();
 
-        let total_traces: i64 = conn.query_row("SELECT COUNT(*) FROM traces", [], |row| row.get(0))?;
+        let total_traces: i64 =
+            conn.query_row("SELECT COUNT(*) FROM traces", [], |row| row.get(0))?;
 
-        let total_summaries: i64 =
-            conn.query_row("SELECT COUNT(*) FROM summaries", [], |row| row.get(0)).unwrap_or(0);
+        let total_summaries: i64 = conn
+            .query_row("SELECT COUNT(*) FROM summaries", [], |row| row.get(0))
+            .unwrap_or(0);
 
-        let total_entities: i64 =
-            conn.query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0)).unwrap_or(0);
+        let total_entities: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+            .unwrap_or(0);
 
-        let oldest_trace_time: Option<i64> =
-            conn.query_row("SELECT MIN(timestamp) FROM traces", [], |row| row.get(0)).ok();
+        let oldest_trace_time: Option<i64> = conn
+            .query_row("SELECT MIN(timestamp) FROM traces", [], |row| row.get(0))
+            .ok();
 
         // 计算数据库大小
         let db_path = self.data_dir.join("engram.db");
@@ -406,7 +525,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT app_name FROM traces
              WHERE timestamp >= ?1 AND timestamp <= ?2 AND app_name IS NOT NULL
-             ORDER BY app_name"
+             ORDER BY app_name",
         )?;
 
         let apps = stmt.query_map(rusqlite::params![start_time, end_time], |row| {
@@ -418,6 +537,571 @@ impl Database {
             result.push(app?);
         }
 
+        Ok(result)
+    }
+
+    /// 获取活动会话列表（对外主入口）
+    pub fn get_activity_sessions(
+        &self,
+        start_time: i64,
+        end_time: i64,
+        app_filter: Option<&Vec<String>>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<ActivitySession>> {
+        let conn = self.conn.lock().unwrap();
+
+        let (sql, has_filter) = if let Some(apps) = app_filter {
+            if apps.is_empty() {
+                (
+                    r#"
+                    SELECT
+                        id, app_name, start_time, end_time,
+                        start_trace_id, end_trace_id, trace_count,
+                        context_text, entities_json, key_actions_json,
+                        created_at, updated_at
+                    FROM activity_sessions
+                    WHERE end_time BETWEEN ?1 AND ?2
+                    ORDER BY end_time DESC
+                    LIMIT ?3 OFFSET ?4
+                    "#
+                    .to_string(),
+                    false,
+                )
+            } else {
+                let placeholders: Vec<String> =
+                    (0..apps.len()).map(|i| format!("?{}", i + 5)).collect();
+                (
+                    format!(
+                        r#"
+                        SELECT
+                            id, app_name, start_time, end_time,
+                            start_trace_id, end_trace_id, trace_count,
+                            context_text, entities_json, key_actions_json,
+                            created_at, updated_at
+                        FROM activity_sessions
+                        WHERE end_time BETWEEN ?1 AND ?2
+                          AND app_name IN ({})
+                        ORDER BY end_time DESC
+                        LIMIT ?3 OFFSET ?4
+                        "#,
+                        placeholders.join(", ")
+                    ),
+                    true,
+                )
+            }
+        } else {
+            (
+                r#"
+                SELECT
+                    id, app_name, start_time, end_time,
+                    start_trace_id, end_trace_id, trace_count,
+                    context_text, entities_json, key_actions_json,
+                    created_at, updated_at
+                FROM activity_sessions
+                WHERE end_time BETWEEN ?1 AND ?2
+                ORDER BY end_time DESC
+                LIMIT ?3 OFFSET ?4
+                "#
+                .to_string(),
+                false,
+            )
+        };
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        let sessions = if has_filter {
+            let apps = app_filter.unwrap();
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                Box::new(start_time),
+                Box::new(end_time),
+                Box::new(limit),
+                Box::new(offset),
+            ];
+            for app in apps {
+                params.push(Box::new(app.clone()));
+            }
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            stmt.query_map(params_refs.as_slice(), |row| {
+                Ok(ActivitySession {
+                    id: row.get(0)?,
+                    app_name: row.get(1)?,
+                    start_time: row.get(2)?,
+                    end_time: row.get(3)?,
+                    start_trace_id: row.get(4)?,
+                    end_trace_id: row.get(5)?,
+                    trace_count: row.get::<_, i64>(6)? as u32,
+                    context_text: row.get(7)?,
+                    entities_json: row.get(8)?,
+                    key_actions_json: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map(
+                rusqlite::params![start_time, end_time, limit, offset],
+                |row| {
+                    Ok(ActivitySession {
+                        id: row.get(0)?,
+                        app_name: row.get(1)?,
+                        start_time: row.get(2)?,
+                        end_time: row.get(3)?,
+                        start_trace_id: row.get(4)?,
+                        end_trace_id: row.get(5)?,
+                        trace_count: row.get::<_, i64>(6)? as u32,
+                        context_text: row.get(7)?,
+                        entities_json: row.get(8)?,
+                        key_actions_json: row.get(9)?,
+                        created_at: row.get(10)?,
+                        updated_at: row.get(11)?,
+                    })
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        Ok(sessions)
+    }
+
+    pub fn get_activity_session_by_id(&self, id: i64) -> Result<Option<ActivitySession>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            r#"
+            SELECT
+                id, app_name, start_time, end_time,
+                start_trace_id, end_trace_id, trace_count,
+                context_text, entities_json, key_actions_json,
+                created_at, updated_at
+            FROM activity_sessions
+            WHERE id = ?1
+            "#,
+            rusqlite::params![id],
+            |row| {
+                Ok(ActivitySession {
+                    id: row.get(0)?,
+                    app_name: row.get(1)?,
+                    start_time: row.get(2)?,
+                    end_time: row.get(3)?,
+                    start_trace_id: row.get(4)?,
+                    end_trace_id: row.get(5)?,
+                    trace_count: row.get::<_, i64>(6)? as u32,
+                    context_text: row.get(7)?,
+                    entities_json: row.get(8)?,
+                    key_actions_json: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn get_traces_by_activity_session(
+        &self,
+        session_id: i64,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Trace>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, timestamp, image_path, app_name, window_title,
+                   is_fullscreen, window_x, window_y, window_w, window_h,
+                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
+            FROM traces
+            WHERE activity_session_id = ?1
+            ORDER BY timestamp DESC
+            LIMIT ?2 OFFSET ?3
+            "#,
+        )?;
+
+        let traces = stmt.query_map(rusqlite::params![session_id, limit, offset], |row| {
+            Ok(Trace {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                image_path: row.get(2)?,
+                app_name: row.get(3)?,
+                window_title: row.get(4)?,
+                is_fullscreen: row.get(5)?,
+                window_x: row.get(6)?,
+                window_y: row.get(7)?,
+                window_w: row.get(8)?,
+                window_h: row.get(9)?,
+                is_idle: row.get(10)?,
+                ocr_text: row.get(11)?,
+                activity_session_id: row.get(12)?,
+                is_key_action: row.get(13)?,
+                created_at: row.get(14)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for t in traces {
+            result.push(t?);
+        }
+        Ok(result)
+    }
+
+    pub fn get_recent_traces_in_session_before(
+        &self,
+        session_id: i64,
+        before_timestamp: i64,
+        limit: u32,
+    ) -> Result<Vec<Trace>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, timestamp, image_path, app_name, window_title,
+                   is_fullscreen, window_x, window_y, window_w, window_h,
+                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
+            FROM traces
+            WHERE activity_session_id = ?1
+              AND timestamp < ?2
+            ORDER BY timestamp DESC
+            LIMIT ?3
+            "#,
+        )?;
+
+        let traces = stmt.query_map(
+            rusqlite::params![session_id, before_timestamp, limit],
+            |row| {
+                Ok(Trace {
+                    id: row.get(0)?,
+                    timestamp: row.get(1)?,
+                    image_path: row.get(2)?,
+                    app_name: row.get(3)?,
+                    window_title: row.get(4)?,
+                    is_fullscreen: row.get(5)?,
+                    window_x: row.get(6)?,
+                    window_y: row.get(7)?,
+                    window_w: row.get(8)?,
+                    window_h: row.get(9)?,
+                    is_idle: row.get(10)?,
+                    ocr_text: row.get(11)?,
+                    activity_session_id: row.get(12)?,
+                    is_key_action: row.get(13)?,
+                    created_at: row.get(14)?,
+                })
+            },
+        )?;
+
+        let mut result = Vec::new();
+        for t in traces {
+            result.push(t?);
+        }
+        Ok(result)
+    }
+
+    pub fn get_activity_session_events(
+        &self,
+        session_id: i64,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<ActivitySessionEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT
+                id, session_id, trace_id, timestamp,
+                summary, action_description, activity_type, confidence, entities_json, is_key_action,
+                created_at
+            FROM activity_session_events
+            WHERE session_id = ?1
+            ORDER BY timestamp DESC
+            LIMIT ?2 OFFSET ?3
+            "#,
+        )?;
+
+        let rows = stmt.query_map(rusqlite::params![session_id, limit, offset], |row| {
+            Ok(ActivitySessionEvent {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                trace_id: row.get(2)?,
+                timestamp: row.get(3)?,
+                summary: row.get(4)?,
+                action_description: row.get(5)?,
+                activity_type: row.get(6)?,
+                confidence: row.get(7)?,
+                entities_json: row.get(8)?,
+                is_key_action: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r?);
+        }
+        Ok(result)
+    }
+
+    pub fn append_activity_session_event(
+        &self,
+        session_id: i64,
+        trace_id: i64,
+        timestamp: i64,
+        summary: Option<&str>,
+        action_description: Option<&str>,
+        activity_type: Option<&str>,
+        confidence: Option<f32>,
+        entities: &[String],
+        raw_json: Option<&str>,
+        is_key_action: bool,
+    ) -> Result<()> {
+        use chrono::{DateTime, Local};
+        use serde_json::{Map, Value};
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let entities_json = if entities.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(entities).unwrap_or_else(|_| "[]".to_string()))
+        };
+
+        tx.execute(
+            r#"
+            INSERT INTO activity_session_events (
+                session_id, trace_id, timestamp,
+                summary, action_description, activity_type, confidence,
+                entities_json, raw_json, is_key_action
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+            rusqlite::params![
+                session_id,
+                trace_id,
+                timestamp,
+                summary,
+                action_description,
+                activity_type,
+                confidence,
+                entities_json,
+                raw_json,
+                is_key_action,
+            ],
+        )?;
+
+        tx.execute(
+            "UPDATE traces SET is_key_action = ?1 WHERE id = ?2",
+            rusqlite::params![is_key_action, trace_id],
+        )?;
+
+        // 读取并合并 entities_json（计数）
+        let existing_entities_json: Option<String> = tx
+            .query_row(
+                "SELECT entities_json FROM activity_sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let mut counts: Map<String, Value> = existing_entities_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Map<String, Value>>(s).ok())
+            .unwrap_or_default();
+
+        for e in entities {
+            if e.trim().is_empty() {
+                continue;
+            }
+            let current = counts.get(e).and_then(|v| v.as_i64()).unwrap_or(0);
+            counts.insert(e.clone(), Value::from(current + 1));
+        }
+
+        let merged_entities_json = if counts.is_empty() {
+            None
+        } else {
+            Some(Value::Object(counts).to_string())
+        };
+
+        // 追加 context_text（裁剪到一定长度，防止无限增长）
+        let existing_context: Option<String> = tx
+            .query_row(
+                "SELECT context_text FROM activity_sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let existing_key_actions: Option<String> = tx
+            .query_row(
+                "SELECT key_actions_json FROM activity_sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let time_str = DateTime::from_timestamp_millis(timestamp)
+            .map(|t| t.with_timezone(&Local).format("%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "?".to_string());
+
+        let mut appended = existing_context.unwrap_or_default();
+        if !appended.is_empty() && !appended.ends_with('\n') {
+            appended.push('\n');
+        }
+        if let Some(s) = summary {
+            if !s.trim().is_empty() {
+                appended.push_str(&format!("[{}] {}\n", time_str, s.trim()));
+            }
+        }
+
+        const MAX_CONTEXT_CHARS: usize = 20_000;
+        if appended.chars().count() > MAX_CONTEXT_CHARS {
+            let tail: String = appended
+                .chars()
+                .rev()
+                .take(MAX_CONTEXT_CHARS)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            appended = tail;
+        }
+
+        // key_actions_json：仅追加关键行为（裁剪长度）
+        let mut next_key_actions: Option<String> = existing_key_actions;
+        if is_key_action {
+            let mut arr = next_key_actions
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default();
+
+            let action_text = action_description
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| summary.unwrap_or("").trim());
+
+            let action = serde_json::json!({
+                "timestamp": timestamp,
+                "trace_id": trace_id,
+                "summary": summary.unwrap_or("").trim(),
+                "action_description": action_text,
+                "activity_type": activity_type,
+                "entities": entities,
+            });
+
+            if arr
+                .last()
+                .map(|v| v.get("trace_id").and_then(|x| x.as_i64()) == Some(trace_id))
+                .unwrap_or(false)
+            {
+                // no-op
+            } else {
+                arr.push(action);
+            }
+
+            const MAX_KEY_ACTIONS: usize = 80;
+            if arr.len() > MAX_KEY_ACTIONS {
+                arr = arr.split_off(arr.len() - MAX_KEY_ACTIONS);
+            }
+            next_key_actions = Some(Value::Array(arr).to_string());
+        }
+
+        tx.execute(
+            r#"
+            UPDATE activity_sessions
+            SET
+                context_text = ?1,
+                entities_json = ?2,
+                key_actions_json = ?3,
+                updated_at = (strftime('%s', 'now') * 1000)
+            WHERE id = ?4
+            "#,
+            rusqlite::params![
+                if appended.is_empty() {
+                    None
+                } else {
+                    Some(appended)
+                },
+                merged_entities_json,
+                next_key_actions,
+                session_id
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn create_chat_thread(&self, title: Option<&str>) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO chat_threads (title) VALUES (?1)",
+            rusqlite::params![title],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn append_chat_message(
+        &self,
+        thread_id: i64,
+        role: &str,
+        content: &str,
+        context_json: Option<&str>,
+    ) -> Result<i64> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            r#"
+            INSERT INTO chat_messages (thread_id, role, content, context_json)
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+            rusqlite::params![thread_id, role, content, context_json],
+        )?;
+        let message_id = tx.last_insert_rowid();
+
+        tx.execute(
+            "UPDATE chat_threads SET updated_at = (strftime('%s', 'now') * 1000) WHERE id = ?1",
+            rusqlite::params![thread_id],
+        )?;
+
+        tx.commit()?;
+        Ok(message_id)
+    }
+
+    pub fn get_chat_messages(
+        &self,
+        thread_id: i64,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<ChatMessage>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, thread_id, role, content, context_json, created_at
+            FROM chat_messages
+            WHERE thread_id = ?1
+            ORDER BY created_at ASC
+            LIMIT ?2 OFFSET ?3
+            "#,
+        )?;
+
+        let rows = stmt.query_map(rusqlite::params![thread_id, limit, offset], |row| {
+            Ok(ChatMessage {
+                id: row.get(0)?,
+                thread_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                context_json: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r?);
+        }
         Ok(result)
     }
 
@@ -477,12 +1161,12 @@ impl Database {
         &self.data_dir
     }
 
-    /// 更新 trace 的 OCR 数据
-    pub fn update_trace_ocr(&self, trace_id: i64, ocr_text: &str, ocr_json: &str) -> Result<()> {
+    /// 更新 trace 的 OCR/文本数据（轻量）
+    pub fn update_trace_ocr_text(&self, trace_id: i64, ocr_text: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE traces SET ocr_text = ?1, ocr_json = ?2 WHERE id = ?3",
-            rusqlite::params![ocr_text, ocr_json, trace_id],
+            "UPDATE traces SET ocr_text = ?1 WHERE id = ?2",
+            rusqlite::params![ocr_text, trace_id],
         )?;
         Ok(())
     }
@@ -510,7 +1194,10 @@ impl Database {
             rusqlite::params![trace_id, embedding],
         )?;
 
-        debug!("Updated embedding for trace {} (vec index synced, dim={})", trace_id, dimension);
+        debug!(
+            "Updated embedding for trace {} (vec index synced, dim={})",
+            trace_id, dimension
+        );
         Ok(())
     }
 
@@ -572,7 +1259,7 @@ impl Database {
             r#"
             SELECT id, timestamp, image_path, app_name, window_title,
                    is_fullscreen, window_x, window_y, window_w, window_h,
-                   is_idle, ocr_text, created_at
+                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
             FROM traces
             WHERE ocr_text IS NULL
             ORDER BY timestamp DESC
@@ -594,7 +1281,9 @@ impl Database {
                 window_h: row.get(9)?,
                 is_idle: row.get(10)?,
                 ocr_text: row.get(11)?,
-                created_at: row.get(12)?,
+                activity_session_id: row.get(12)?,
+                is_key_action: row.get(13)?,
+                created_at: row.get(14)?,
             })
         })?;
 
@@ -612,7 +1301,7 @@ impl Database {
             r#"
             SELECT id, timestamp, image_path, app_name, window_title,
                    is_fullscreen, window_x, window_y, window_w, window_h,
-                   is_idle, ocr_text, created_at
+                   is_idle, ocr_text, activity_session_id, is_key_action, created_at
             FROM traces
             WHERE ocr_text IS NOT NULL AND embedding IS NULL
             ORDER BY timestamp DESC
@@ -634,7 +1323,9 @@ impl Database {
                 window_h: row.get(9)?,
                 is_idle: row.get(10)?,
                 ocr_text: row.get(11)?,
-                created_at: row.get(12)?,
+                activity_session_id: row.get(12)?,
+                is_key_action: row.get(13)?,
+                created_at: row.get(14)?,
             })
         })?;
 
@@ -646,7 +1337,11 @@ impl Database {
     }
 
     /// 向量相似度搜索（使用 sqlite-vec KNN 搜索）
-    pub fn search_by_embedding(&self, query_embedding: &[f32], limit: u32) -> Result<Vec<(Trace, f32)>> {
+    pub fn search_by_embedding(
+        &self,
+        query_embedding: &[f32],
+        limit: u32,
+    ) -> Result<Vec<(Trace, f32)>> {
         let conn = self.conn.lock().unwrap();
 
         // 将查询向量转换为字节数组（sqlite-vec 接受的格式）
@@ -662,7 +1357,7 @@ impl Database {
             SELECT
                 t.id, t.timestamp, t.image_path, t.app_name, t.window_title,
                 t.is_fullscreen, t.window_x, t.window_y, t.window_w, t.window_h,
-                t.is_idle, t.ocr_text, t.created_at,
+                t.is_idle, t.ocr_text, t.activity_session_id, t.is_key_action, t.created_at,
                 v.distance
             FROM traces_vec v
             INNER JOIN traces t ON v.trace_id = t.id
@@ -673,7 +1368,7 @@ impl Database {
         )?;
 
         let traces = stmt.query_map(rusqlite::params![query_bytes, limit], |row| {
-            let distance: f32 = row.get(13)?;
+            let distance: f32 = row.get(15)?;
             // 将距离转换为相似度（距离越小，相似度越高）
             // 使用 1 / (1 + distance) 转换
             let similarity = 1.0 / (1.0 + distance);
@@ -692,7 +1387,9 @@ impl Database {
                     window_h: row.get(9)?,
                     is_idle: row.get(10)?,
                     ocr_text: row.get(11)?,
-                    created_at: row.get(12)?,
+                    activity_session_id: row.get(12)?,
+                    is_key_action: row.get(13)?,
+                    created_at: row.get(14)?,
                 },
                 similarity,
             ))
@@ -710,7 +1407,12 @@ impl Database {
     }
 
     /// 混合搜索（FTS + 向量）
-    pub fn hybrid_search(&self, query: &str, query_embedding: Option<&[f32]>, limit: u32) -> Result<Vec<(Trace, f32)>> {
+    pub fn hybrid_search(
+        &self,
+        query: &str,
+        query_embedding: Option<&[f32]>,
+        limit: u32,
+    ) -> Result<Vec<(Trace, f32)>> {
         // 1. FTS 搜索
         let fts_results = self.search_text(query, limit * 2)?;
 
@@ -718,7 +1420,8 @@ impl Database {
         let query_embedding = match query_embedding {
             Some(emb) => emb,
             None => {
-                return Ok(fts_results.into_iter()
+                return Ok(fts_results
+                    .into_iter()
                     .take(limit as usize)
                     .map(|t| (t, 1.0))
                     .collect());
@@ -754,9 +1457,7 @@ impl Database {
         // 按 RRF 分数排序
         let mut results: Vec<(Trace, f32)> = scores
             .into_iter()
-            .filter_map(|(id, score)| {
-                all_traces.get(&id).map(|t| (t.clone(), score))
-            })
+            .filter_map(|(id, score)| all_traces.get(&id).map(|t| (t.clone(), score)))
             .collect();
 
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -767,7 +1468,8 @@ impl Database {
 
     /// 反序列化向量
     fn deserialize_embedding(bytes: &[u8]) -> Vec<f32> {
-        bytes.chunks_exact(4)
+        bytes
+            .chunks_exact(4)
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect()
     }
@@ -868,9 +1570,8 @@ impl Database {
                 "#,
             )?;
 
-            let summaries = stmt.query_map(
-                rusqlite::params![start_time, end_time, limit],
-                |row| {
+            let summaries =
+                stmt.query_map(rusqlite::params![start_time, end_time, limit], |row| {
                     Ok(Summary {
                         id: row.get(0)?,
                         start_time: row.get(1)?,
@@ -881,8 +1582,7 @@ impl Database {
                         trace_count: row.get(6)?,
                         created_at: row.get(7)?,
                     })
-                },
-            )?;
+                })?;
 
             for summary in summaries {
                 result.push(summary?);
@@ -1023,7 +1723,11 @@ impl Database {
     ) -> Result<Vec<Entity>> {
         let conn = self.conn.lock().unwrap();
 
-        let order = if order_by_mentions { "mention_count DESC" } else { "last_seen DESC" };
+        let order = if order_by_mentions {
+            "mention_count DESC"
+        } else {
+            "last_seen DESC"
+        };
 
         let mut result = Vec::new();
 
@@ -1134,7 +1838,7 @@ impl Database {
             r#"
             SELECT t.id, t.timestamp, t.image_path, t.app_name, t.window_title,
                    t.is_fullscreen, t.window_x, t.window_y, t.window_w, t.window_h,
-                   t.is_idle, t.ocr_text, t.created_at
+                   t.is_idle, t.ocr_text, t.activity_session_id, t.is_key_action, t.created_at
             FROM traces t
             JOIN entity_traces et ON t.id = et.trace_id
             WHERE et.entity_id = ?1
@@ -1157,7 +1861,9 @@ impl Database {
                 window_h: row.get(9)?,
                 is_idle: row.get(10)?,
                 ocr_text: row.get(11)?,
-                created_at: row.get(12)?,
+                activity_session_id: row.get(12)?,
+                is_key_action: row.get(13)?,
+                created_at: row.get(14)?,
             })
         })?;
 

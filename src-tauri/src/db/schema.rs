@@ -4,6 +4,8 @@ use anyhow::Result;
 use rusqlite::Connection;
 use tracing::info;
 
+const SCHEMA_VERSION: i32 = 3;
+
 /// 初始化数据库 Schema
 pub fn init_schema(conn: &Connection) -> Result<()> {
     info!("Initializing database schema...");
@@ -11,13 +13,91 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // 启用 WAL 模式
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
 
-    // 创建 traces 表
+    let current_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+    // 当前阶段无用户数据，直接采用“版本不一致则重建”的策略，避免复杂迁移。
+    if current_version != SCHEMA_VERSION {
+        info!(
+            "Schema version mismatch (current={}, expected={}), rebuilding schema...",
+            current_version, SCHEMA_VERSION
+        );
+
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys = OFF;
+
+            DROP TRIGGER IF EXISTS traces_ai;
+            DROP TRIGGER IF EXISTS traces_ad;
+            DROP TRIGGER IF EXISTS traces_au;
+
+            DROP TABLE IF EXISTS traces_fts;
+            DROP TABLE IF EXISTS traces_vec;
+            DROP TABLE IF EXISTS traces;
+
+            DROP TABLE IF EXISTS activity_session_events;
+            DROP TABLE IF EXISTS activity_sessions;
+
+            DROP TABLE IF EXISTS chat_messages;
+            DROP TABLE IF EXISTS chat_threads;
+
+            DROP TABLE IF EXISTS summaries;
+            DROP TABLE IF EXISTS entity_traces;
+            DROP TABLE IF EXISTS entities;
+
+            DROP TABLE IF EXISTS settings;
+            DROP TABLE IF EXISTS blacklist;
+
+            PRAGMA foreign_keys = ON;
+            "#,
+        )?;
+    }
+
+    // 启用外键
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+
+    // 活动会话表（用户行为 Session：按 app + 时间连续性聚合）
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS activity_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            app_name TEXT NOT NULL,
+            start_time INTEGER NOT NULL,
+            end_time INTEGER NOT NULL,
+
+            start_trace_id INTEGER,
+            end_trace_id INTEGER,
+            trace_count INTEGER NOT NULL DEFAULT 0,
+
+            -- 给 UI/Chat 用的“浓缩上下文”，由 VLM 分析结果增量追加、裁剪
+            context_text TEXT,
+            -- 聚合后的实体计数（JSON: { "entity": count, ... }）
+            entities_json TEXT,
+            -- 关键行为列表（JSON 数组，面向对外展示）
+            key_actions_json TEXT,
+
+            created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            updated_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_activity_sessions_time ON activity_sessions(start_time, end_time);
+        CREATE INDEX IF NOT EXISTS idx_activity_sessions_app ON activity_sessions(app_name);
+        "#,
+    )?;
+
+    // 核心：traces（原子事实流）
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS traces (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            -- 时间戳 (Unix 毫秒)
             timestamp INTEGER NOT NULL,
+
+            -- 截图文件路径 (相对于数据目录)
             image_path TEXT NOT NULL,
+
+            -- 窗口上下文
             app_name TEXT,
             window_title TEXT,
             is_fullscreen INTEGER DEFAULT 0,
@@ -25,16 +105,61 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             window_y INTEGER,
             window_w INTEGER,
             window_h INTEGER,
+
+            -- 系统状态
             is_idle INTEGER DEFAULT 0,
+
+            -- 轻量 OCR/文本（用于 FTS/Embedding/Search）
             ocr_text TEXT,
-            ocr_json TEXT,
+
+            -- 活动会话关联（对外主要暴露 session）
+            activity_session_id INTEGER,
+
+            -- 是否关键行为（由 VLM 分析阶段决定）
+            is_key_action INTEGER DEFAULT 0,
+
+            -- 向量
             embedding BLOB,
+
+            -- 感知哈希（用于去重）
             phash BLOB,
-            created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+
+            created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+
+            FOREIGN KEY (activity_session_id) REFERENCES activity_sessions(id) ON DELETE SET NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
         CREATE INDEX IF NOT EXISTS idx_traces_app ON traces(app_name);
+        CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(activity_session_id);
+        "#,
+    )?;
+
+    // 会话事件：每条 trace 的 VLM 结论挂到 session 上（而不是写回 trace）
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS activity_session_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            trace_id INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL,
+
+            summary TEXT,
+            action_description TEXT,
+            activity_type TEXT,
+            confidence REAL,
+            entities_json TEXT,
+            raw_json TEXT,
+            is_key_action INTEGER DEFAULT 0,
+
+            created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+
+            FOREIGN KEY (session_id) REFERENCES activity_sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_session_events_session_time
+            ON activity_session_events(session_id, timestamp);
         "#,
     )?;
 
@@ -148,7 +273,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             ('similarity_threshold', '5'),
             ('hot_data_days', '7'),
             ('warm_data_days', '30'),
-            ('summary_interval_min', '15');
+            ('summary_interval_min', '15'),
+            ('session_gap_threshold_ms', '300000');
         "#,
     )?;
 
@@ -192,6 +318,34 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         );
         "#,
     )?;
+
+    // Chat：对话线程与消息（与“活动 Session”概念区分）
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            updated_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id INTEGER NOT NULL,
+            role TEXT NOT NULL, -- 'user' | 'assistant' | 'system'
+            content TEXT NOT NULL,
+            -- JSON: { session_ids: [...], trace_ids: [...], time_range: {...} }
+            context_json TEXT,
+            created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+
+            FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_time ON chat_messages(thread_id, created_at);
+        "#,
+    )?;
+
+    conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))?;
 
     info!("Database schema initialized successfully");
     Ok(())

@@ -184,9 +184,11 @@ pub struct VlmTaskStatus {
 └────────────┬────────────────────┘
              │
              ├─► 加载截图文件
-             ├─► 调用 VLM 分析
-             ├─► 提取 ocr_text/ocr_json
-             ├─► 更新数据库 OCR 数据
+             ├─► 组装上下文（Session + 最近 1-2 条 trace）
+             ├─► 调用 VLM 分析（带 context）
+             ├─► 提取轻量 ocr_text
+             ├─► 更新 traces.ocr_text
+             ├─► 写入 session_events + 更新 activity_sessions
              ├─► 生成嵌入向量
              └─► 更新数据库 embedding
 ```
@@ -200,34 +202,43 @@ Input: Trace { id, image_path, ocr_text=NULL, ... }
   │      path = db.get_full_path(&trace.image_path)
   │      image = image::open(path).to_rgb8()
   │
-  ├─► 2. 调用 VLM 分析
-  │      desc = vlm_engine.analyze_screen(&image).await?
+  ├─► 2. 调用 VLM 分析（带上下文）
+  │      context = session.context_text + recent_traces(1-2)
+  │      desc = vlm_engine.analyze_screen_with_context(&image, context).await?
   │      返回 ScreenDescription {
   │        summary: String,
   │        text_content: Option<String>,
   │        detected_app: Option<String>,
   │        activity_type: Option<String>,
   │        entities: Vec<String>,
+  │        is_key_action: bool,
+  │        action_description: Option<String>,
   │        confidence: f32,
   │      }
   │
-  ├─► 3. 提取 OCR 数据
-  │      ocr_text = VlmEngine::get_text_for_embedding(&desc)
-  │      ocr_json = serde_json::to_string(&desc)
+  ├─► 3. 提取轻量 OCR 文本（写回 trace）
+  │      ocr_text = desc.text_content ?? desc.summary
   │
-  ├─► 4. 更新数据库（OCR 数据）
-  │      db.update_trace_ocr(trace.id, &ocr_text, &ocr_json)?
+  ├─► 4. 更新数据库（trace 轻量字段）
+  │      db.update_trace_ocr_text(trace.id, &ocr_text)?
   │
-  ├─► 5. 生成嵌入向量
+  ├─► 5. 同步 VLM 结论到 Session（对外核心）
+  │      db.append_activity_session_event(
+  │        session_id, trace.id, trace.timestamp,
+  │        summary, action_description, activity_type, confidence,
+  │        entities, raw_json, is_key_action
+  │      )?
+  │
+  ├─► 6. 生成嵌入向量
   │      embedding = embedder.embed(&ocr_text).await?
   │      返回 Vec<f32> (384 维)
   │
-  ├─► 6. 序列化嵌入向量
+  ├─► 7. 序列化嵌入向量
   │      embedding_bytes = embedding.iter()
   │        .flat_map(|f| f.to_le_bytes())
   │        .collect::<Vec<u8>>()
   │
-  ├─► 7. 更新数据库（嵌入向量）
+  ├─► 8. 更新数据库（嵌入向量）
   │      db.update_trace_embedding(trace.id, &embedding_bytes)?
   │
   └─► Output: Success (processed_count++)
@@ -387,6 +398,8 @@ pub struct ScreenDescription {
     pub detected_app: Option<String>,
     pub activity_type: Option<String>,
     pub entities: Vec<String>,
+    pub is_key_action: bool,
+    pub action_description: Option<String>,
     pub confidence: f32,
 }
 ```

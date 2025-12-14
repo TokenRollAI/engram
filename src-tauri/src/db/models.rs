@@ -2,6 +2,59 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 活动会话（用户行为 Session）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivitySession {
+    pub id: i64,
+    pub app_name: String,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub start_trace_id: Option<i64>,
+    pub end_trace_id: Option<i64>,
+    pub trace_count: u32,
+    pub context_text: Option<String>,
+    pub entities_json: Option<String>,
+    pub key_actions_json: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 会话事件：单条 trace 的 VLM 结论
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivitySessionEvent {
+    pub id: i64,
+    pub session_id: i64,
+    pub trace_id: i64,
+    pub timestamp: i64,
+    pub summary: Option<String>,
+    pub action_description: Option<String>,
+    pub activity_type: Option<String>,
+    pub confidence: Option<f32>,
+    pub entities_json: Option<String>,
+    pub is_key_action: bool,
+    pub created_at: i64,
+}
+
+/// Chat 线程（与“活动 Session”概念区分）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatThread {
+    pub id: i64,
+    pub title: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Chat 消息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: i64,
+    pub thread_id: i64,
+    pub role: String,
+    pub content: String,
+    pub context_json: Option<String>,
+    pub created_at: i64,
+}
+
 /// 痕迹记录（用于插入）
 #[derive(Debug, Clone)]
 pub struct NewTrace {
@@ -16,7 +69,6 @@ pub struct NewTrace {
     pub window_h: Option<u32>,
     pub is_idle: bool,
     pub ocr_text: Option<String>,
-    pub ocr_json: Option<String>,
     pub phash: Option<Vec<u8>>,
 }
 
@@ -35,6 +87,8 @@ pub struct Trace {
     pub window_h: Option<u32>,
     pub is_idle: bool,
     pub ocr_text: Option<String>,
+    pub activity_session_id: Option<i64>,
+    pub is_key_action: bool,
     pub created_at: i64,
 }
 
@@ -139,6 +193,7 @@ pub struct Settings {
     pub hot_data_days: u32,
     pub warm_data_days: u32,
     pub summary_interval_min: u32,
+    pub session_gap_threshold_ms: u64,
 }
 
 impl Default for Settings {
@@ -150,6 +205,7 @@ impl Default for Settings {
             hot_data_days: 7,
             warm_data_days: 30,
             summary_interval_min: 15,
+            session_gap_threshold_ms: 300000,
         }
     }
 }

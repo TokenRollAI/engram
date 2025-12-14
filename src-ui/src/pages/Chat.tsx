@@ -7,12 +7,14 @@ interface ChatRequest {
   start_time: number | null;
   end_time: number | null;
   app_filter: string[] | null;
+  thread_id: number | null;
 }
 
 interface ChatResponse {
   content: string;
   context_count: number;
   time_range: string | null;
+  thread_id: number;
 }
 
 interface Message {
@@ -26,6 +28,7 @@ const Chat: Component = () => {
   const [messages, setMessages] = createSignal<Message[]>([]);
   const [input, setInput] = createSignal("");
   const [loading, setLoading] = createSignal(false);
+  const [threadId, setThreadId] = createSignal<number | null>(null);
   const [availableApps, setAvailableApps] = createSignal<string[]>([]);
   const [selectedApps, setSelectedApps] = createSignal<string[]>([]);
   const [timeRange, setTimeRange] = createSignal<"today" | "week" | "month" | "all">("today");
@@ -83,9 +86,11 @@ const Chat: Component = () => {
         start_time: start,
         end_time: end,
         app_filter: selectedApps().length > 0 ? selectedApps() : null,
+        thread_id: threadId(),
       };
 
       const response = await invoke<ChatResponse>("chat_with_memory", { request });
+      setThreadId(response.thread_id);
 
       // 添加助手回复
       setMessages((prev) => [
@@ -121,6 +126,7 @@ const Chat: Component = () => {
   // 清空对话
   const clearChat = () => {
     setMessages([]);
+    setThreadId(null);
   };
 
   // 时间范围变更时重新加载应用

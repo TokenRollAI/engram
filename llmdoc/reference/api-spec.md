@@ -32,6 +32,29 @@ invoke('get_traces', {
   offset?: number,
 }): Promise<Trace[]>
 
+// 按时间范围查询活动 Session（对外主入口）
+invoke('get_activity_sessions', {
+  start_time: number,  // Unix ms
+  end_time: number,
+  limit?: number,
+  offset?: number,
+  app_filter?: string[] | null,
+}): Promise<ActivitySession[]>
+
+// 获取某个 Session 下的 traces（用于展开细节）
+invoke('get_activity_session_traces', {
+  session_id: number,
+  limit?: number,
+  offset?: number,
+}): Promise<Trace[]>
+
+// 获取某个 Session 的事件（每条 trace 的 VLM 结论）
+invoke('get_activity_session_events', {
+  session_id: number,
+  limit?: number,
+  offset?: number,
+}): Promise<ActivitySessionEvent[]>
+
 // 获取截图图片数据（用于 UI 展示）
 // 前端推荐用 Blob URL 渲染：URL.createObjectURL(new Blob([bytes], { type: mime }))
 invoke('get_image_data', {
@@ -47,12 +70,6 @@ invoke('search_traces', {
   app_filter?: string[],
   limit?: number,
 }): Promise<SearchResult[]>
-
-// 获取单个痕迹详情
-invoke('get_trace', { id: number }): Promise<Trace | null>
-
-// 删除痕迹
-invoke('delete_traces', { ids: number[] }): Promise<void>
 ```
 
 ### 摘要查询 (Phase 3)
@@ -101,21 +118,11 @@ invoke('delete_blacklist_rule', { id: number }): Promise<void>
 invoke('get_storage_stats'): Promise<{
   total_traces: number
   total_summaries: number
+  total_entities: number
   database_size_bytes: number
   screenshots_size_bytes: number
   oldest_trace_time: number | null
 }>
-
-// 获取应用使用统计
-invoke('get_app_stats', {
-  start_time: number,
-  end_time: number,
-}): Promise<AppStat[]>
-
-// 清理旧数据
-invoke('cleanup_old_data', {
-  before_time: number
-}): Promise<{ deleted_count: number }>
 ```
 
 ---
@@ -132,6 +139,37 @@ interface Trace {
   is_fullscreen: boolean
   is_idle: boolean
   ocr_text: string | null
+  activity_session_id: number | null
+  is_key_action: boolean
+  created_at: number
+}
+
+interface ActivitySession {
+  id: number
+  app_name: string
+  start_time: number
+  end_time: number
+  start_trace_id: number | null
+  end_trace_id: number | null
+  trace_count: number
+  context_text: string | null
+  entities_json: string | null
+  key_actions_json: string | null
+  created_at: number
+  updated_at: number
+}
+
+interface ActivitySessionEvent {
+  id: number
+  session_id: number
+  trace_id: number
+  timestamp: number
+  summary: string | null
+  action_description: string | null
+  activity_type: string | null
+  confidence: number | null
+  entities_json: string | null
+  is_key_action: boolean
   created_at: number
 }
 
@@ -172,9 +210,39 @@ interface Settings {
   hot_data_days: number
   warm_data_days: number
   summary_interval_min: number
-  data_dir: string
-  model_dir: string
+  session_gap_threshold_ms: number
 }
+
+interface ChatRequest {
+  message: string
+  start_time: number | null
+  end_time: number | null
+  app_filter: string[] | null
+  thread_id: number | null
+}
+
+interface ChatResponse {
+  content: string
+  context_count: number
+  time_range: string | null
+  thread_id: number
+}
+
+interface ChatMessage {
+  id: number
+  thread_id: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  context_json: string | null
+  created_at: number
+}
+
+// 获取对话历史
+invoke('get_chat_messages', {
+  thread_id: number,
+  limit?: number,
+  offset?: number,
+}): Promise<ChatMessage[]>
 
 interface BlacklistRule {
   id: number

@@ -6,6 +6,19 @@
 
 ---
 
+## [Phase 3 M3.3 Activity Session 核心化与 Chat 持久化] - 2025-12-15
+
+### 变更内容
+
+- 新增“活动 Session”（用户行为聚合）作为对外主视图：`activity_sessions` + `activity_session_events`
+- `traces` 保留为原子事实流，新增 `activity_session_id` 关联；不再在 trace 上保存完整 VLM JSON
+- VlmTask：分析时使用 `Session + 最近1-2条 trace` 作为上下文，并把 VLM 结论增量同步到 Session
+- 新增关键行为：VLM 返回 `is_key_action` + `action_description`，写入 `traces.is_key_action`、`activity_session_events` 并聚合到 `activity_sessions.key_actions_json`
+- Chat：新增线程/消息持久化（`chat_threads`/`chat_messages`），响应包含 `thread_id`
+- UI：Timeline 默认按 Session 展示，可展开查看 session 内 traces
+
+---
+
 ## [Phase 3 M3.2 Summary 系统、Chat 功能与向量搜索优化] - 2025-12-14
 
 ### 发布内容
@@ -1413,4 +1426,3 @@ cargo build   # 编译新架构
 |------|------|---------|------|
 | 2025-12-14 | Phase 1 (83%) | Tauri 骨架、屏幕捕获、SolidJS 前端 | 本文档 |
 | 待发布 | Phase 2 (0%) | OCR 集成、向量检索、语义搜索 | 待发布 |
-

@@ -4,7 +4,17 @@
 
 use crate::ai::{EmbeddingConfig, VlmConfig};
 use crate::daemon::{DaemonStatus, VlmTaskConfig};
-use crate::db::models::{Entity, SearchResult, Settings, StorageStats, Summary, Trace};
+use crate::db::models::{
+    ActivitySession,
+    ActivitySessionEvent,
+    ChatMessage,
+    Entity,
+    SearchResult,
+    Settings,
+    StorageStats,
+    Summary,
+    Trace,
+};
 use crate::AppState;
 use serde::Serialize;
 use std::path::Path;
@@ -69,6 +79,69 @@ pub async fn get_traces(
     state
         .db
         .get_traces(start_time, end_time, limit.unwrap_or(100), offset.unwrap_or(0))
+        .map_err(|e| e.to_string())
+}
+
+/// 获取活动会话列表（对外主入口）
+#[tauri::command]
+pub async fn get_activity_sessions(
+    state: State<'_, AppState>,
+    start_time: i64,
+    end_time: i64,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    app_filter: Option<Vec<String>>,
+) -> Result<Vec<ActivitySession>, String> {
+    debug!(
+        "get_activity_sessions: start={}, end={}, limit={:?}, offset={:?}, apps={:?}",
+        start_time, end_time, limit, offset, app_filter
+    );
+
+    state
+        .db
+        .get_activity_sessions(
+            start_time,
+            end_time,
+            app_filter.as_ref(),
+            limit.unwrap_or(100),
+            offset.unwrap_or(0),
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_activity_session_traces(
+    state: State<'_, AppState>,
+    session_id: i64,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<Trace>, String> {
+    debug!(
+        "get_activity_session_traces: session_id={}, limit={:?}, offset={:?}",
+        session_id, limit, offset
+    );
+
+    state
+        .db
+        .get_traces_by_activity_session(session_id, limit.unwrap_or(200), offset.unwrap_or(0))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_activity_session_events(
+    state: State<'_, AppState>,
+    session_id: i64,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<ActivitySessionEvent>, String> {
+    debug!(
+        "get_activity_session_events: session_id={}, limit={:?}, offset={:?}",
+        session_id, limit, offset
+    );
+
+    state
+        .db
+        .get_activity_session_events(session_id, limit.unwrap_or(200), offset.unwrap_or(0))
         .map_err(|e| e.to_string())
 }
 
@@ -248,6 +321,9 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
     if let Ok(Some(v)) = state.db.get_setting("summary_interval_min") {
         settings.summary_interval_min = v.parse().unwrap_or(settings.summary_interval_min);
     }
+    if let Ok(Some(v)) = state.db.get_setting("session_gap_threshold_ms") {
+        settings.session_gap_threshold_ms = v.parse().unwrap_or(settings.session_gap_threshold_ms);
+    }
 
     Ok(settings)
 }
@@ -283,6 +359,13 @@ pub async fn update_settings(
     state
         .db
         .set_setting("summary_interval_min", &settings.summary_interval_min.to_string())
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting(
+            "session_gap_threshold_ms",
+            &settings.session_gap_threshold_ms.to_string(),
+        )
         .map_err(|e| e.to_string())?;
 
     Ok(())
@@ -665,6 +748,9 @@ pub struct ChatRequest {
     pub end_time: Option<i64>,
     /// 应用过滤（可选）
     pub app_filter: Option<Vec<String>>,
+
+    /// 对话线程 ID（可选；用于持久化历史）
+    pub thread_id: Option<i64>,
 }
 
 /// Chat 响应
@@ -676,6 +762,9 @@ pub struct ChatResponse {
     pub context_count: u32,
     /// 时间范围描述
     pub time_range: Option<String>,
+
+    /// 对话线程 ID（用于后续继续对话）
+    pub thread_id: i64,
 }
 
 /// 与记忆进行对话
@@ -702,23 +791,30 @@ pub async fn chat_with_memory(
         (None, None) => (now - day_ms, now), // 默认最近24小时
     };
 
-    // 获取时间范围内的 traces
-    let traces = state
+    // 获取时间范围内的活动 sessions（对外主视图）
+    let sessions = state
         .db
-        .get_traces_filtered(start_time, end_time, request.app_filter.as_ref(), 50)
+        .get_activity_sessions(start_time, end_time, request.app_filter.as_ref(), 30, 0)
         .map_err(|e| e.to_string())?;
 
-    if traces.is_empty() {
+    // 同时取最近 1-2 条 trace 作为细节补充（可选）
+    let recent_traces = state
+        .db
+        .get_traces_filtered(start_time, end_time, request.app_filter.as_ref(), 2)
+        .map_err(|e| e.to_string())?;
+
+    if sessions.is_empty() && recent_traces.is_empty() {
         return Ok(ChatResponse {
             content: "在指定的时间范围内没有找到相关的屏幕记录。请尝试扩大时间范围或选择其他应用。".to_string(),
             context_count: 0,
             time_range: Some(format_time_range(start_time, end_time)),
+            thread_id: request.thread_id.unwrap_or(0),
         });
     }
 
-    // 构建上下文
-    let context = build_chat_context(&traces);
-    let context_count = traces.len() as u32;
+    // 构建上下文：Session（聚合）+ 最近 1-2 条 Trace（细节）
+    let context = build_chat_context_from_sessions(&sessions, &recent_traces);
+    let context_count = (sessions.len() + recent_traces.len()) as u32;
 
     // 获取 VLM 引擎进行对话
     let vlm_guard = state.vlm.read().await;
@@ -747,11 +843,49 @@ pub async fn chat_with_memory(
         .await
         .map_err(|e| format!("Chat 失败: {}", e))?;
 
+    // 持久化对话历史（thread）
+    let thread_id = match request.thread_id {
+        Some(id) if id > 0 => id,
+        _ => state
+            .db
+            .create_chat_thread(Some("与记忆对话"))
+            .map_err(|e| e.to_string())?,
+    };
+
+    let context_json = serde_json::json!({
+        "time_range": { "start": start_time, "end": end_time },
+        "session_ids": sessions.iter().map(|s| s.id).collect::<Vec<_>>(),
+        "trace_ids": recent_traces.iter().map(|t| t.id).collect::<Vec<_>>(),
+    })
+    .to_string();
+
+    let _ = state
+        .db
+        .append_chat_message(thread_id, "user", &request.message, Some(&context_json));
+    let _ = state
+        .db
+        .append_chat_message(thread_id, "assistant", &response, Some(&context_json));
+
     Ok(ChatResponse {
         content: response,
         context_count,
         time_range: Some(format_time_range(start_time, end_time)),
+        thread_id,
     })
+}
+
+/// 获取 chat 历史
+#[tauri::command]
+pub async fn get_chat_messages(
+    state: State<'_, AppState>,
+    thread_id: i64,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<ChatMessage>, String> {
+    state
+        .db
+        .get_chat_messages(thread_id, limit.unwrap_or(200), offset.unwrap_or(0))
+        .map_err(|e| e.to_string())
 }
 
 /// 获取可用的应用列表（用于过滤）
@@ -773,38 +907,55 @@ pub async fn get_available_apps(
 }
 
 /// 构建 chat 上下文
-fn build_chat_context(traces: &[Trace]) -> String {
+fn build_chat_context_from_sessions(sessions: &[ActivitySession], recent_traces: &[Trace]) -> String {
     let mut context = String::new();
 
-    for trace in traces.iter().take(30) {
-        // 限制30条以避免上下文过长
-        // timestamp 是毫秒级，需要转换为秒级并使用本地时区
-        let time = chrono::DateTime::from_timestamp_millis(trace.timestamp)
+    // Sessions（尽量按时间正序，便于 LLM 理解）
+    let mut sessions_sorted = sessions.to_vec();
+    sessions_sorted.sort_by_key(|s| s.start_time);
+
+    for session in sessions_sorted.iter().take(20) {
+        let start = chrono::DateTime::from_timestamp_millis(session.start_time)
             .map(|t| t.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string())
             .unwrap_or_default();
+        let end = chrono::DateTime::from_timestamp_millis(session.end_time)
+            .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+            .unwrap_or_default();
 
-        let app = trace.app_name.as_deref().unwrap_or("未知应用");
-        let title = trace.window_title.as_deref().unwrap_or("");
+        context.push_str(&format!("[Session {}-{}] {}\n", start, end, session.app_name));
 
-        context.push_str(&format!("[{}] {}", time, app));
-        if !title.is_empty() {
-            context.push_str(&format!(" - {}", title));
+        if let Some(ctx) = &session.context_text {
+            let text: String = ctx.chars().rev().take(800).collect::<String>().chars().rev().collect();
+            if !text.trim().is_empty() {
+                context.push_str(&format!("  结论: {}\n", text.trim()));
+            }
         }
-        context.push('\n');
-
-        if let Some(ocr_text) = &trace.ocr_text {
-            if !ocr_text.is_empty() {
-                // 截断过长的 OCR 文本（按字符数而非字节数，避免 UTF-8 边界问题）
-                let text: String = ocr_text.chars().take(200).collect();
-                let text = if ocr_text.chars().count() > 200 {
-                    format!("{}...", text)
-                } else {
-                    text
-                };
-                context.push_str(&format!("  内容: {}\n", text));
+        if let Some(key_actions_json) = &session.key_actions_json {
+            if !key_actions_json.trim().is_empty() {
+                context.push_str(&format!("  关键行为: {}\n", key_actions_json));
             }
         }
         context.push('\n');
+    }
+
+    // 最近 traces（细节补充）
+    if !recent_traces.is_empty() {
+        context.push_str("【最近截图细节（OCR）】\n");
+        for trace in recent_traces.iter().take(2) {
+            let time = chrono::DateTime::from_timestamp_millis(trace.timestamp)
+                .map(|t| t.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string())
+                .unwrap_or_default();
+            let app = trace.app_name.as_deref().unwrap_or("未知应用");
+
+            context.push_str(&format!("- [{}] {}\n", time, app));
+            if let Some(ocr_text) = &trace.ocr_text {
+                let snippet: String = ocr_text.chars().take(250).collect();
+                if !snippet.trim().is_empty() {
+                    context.push_str(&format!("  {}\n", snippet.trim()));
+                }
+            }
+            context.push('\n');
+        }
     }
 
     context

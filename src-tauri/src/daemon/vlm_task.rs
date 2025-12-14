@@ -1,7 +1,7 @@
 //! VLM 分析后台任务
 //!
 //! 支持并发处理待分析的 traces，调用 VLM 进行屏幕理解，
-//! 更新 ocr_text 和 ocr_json，并生成文本嵌入。
+//! 写入 trace 的轻量 ocr_text 并生成文本嵌入，同时把 VLM 结论聚合到活动 Session。
 
 use crate::ai::embedding::TextEmbedder;
 use crate::ai::vlm::VlmEngine;
@@ -286,26 +286,85 @@ impl VlmTask {
         let image = tokio::task::spawn_blocking(move || Self::load_image(&path))
             .await??;
 
-        // 3. 调用 VLM 分析（异步 HTTP 请求，可并发）
+        // 3. 组装上下文（Session + 最近 1-2 条 trace），并调用 VLM 分析（异步 HTTP 请求，可并发）
+        let session_id = trace.activity_session_id;
+        let session = if let Some(sid) = session_id {
+            db.get_activity_session_by_id(sid)?
+        } else {
+            None
+        };
+
+        let context = if let Some(sid) = session_id {
+            let mut parts: Vec<String> = Vec::new();
+
+            if let Some(s) = session.as_ref() {
+                if let Some(ctx) = s.context_text.as_deref() {
+                    let ctx = ctx.trim();
+                    if !ctx.is_empty() {
+                        parts.push(format!("【Session Context】\n{}", ctx));
+                    }
+                }
+
+                if let Some(kaj) = s.key_actions_json.as_deref() {
+                    let kaj = kaj.trim();
+                    if !kaj.is_empty() {
+                        if let Some(formatted) = Self::format_key_actions_for_context(kaj) {
+                            parts.push(formatted);
+                        }
+                    }
+                }
+            }
+
+            if let Ok(recent) = db.get_recent_traces_in_session_before(sid, trace.timestamp, 2) {
+                let mut lines = Vec::new();
+                for t in recent {
+                    if let Some(text) = t.ocr_text {
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            let snippet: String = text.chars().take(200).collect();
+                            lines.push(format!("- {}", snippet));
+                        }
+                    }
+                }
+                if !lines.is_empty() {
+                    parts.push(format!("【Recent Traces OCR】\n{}", lines.join("\n")));
+                }
+            }
+
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n\n"))
+            }
+        } else {
+            None
+        };
+
         let description = {
             let vlm_guard = vlm.read().await;
             let vlm_engine = vlm_guard
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("VLM not available"))?;
-            vlm_engine.analyze_screen(&image).await?
+            vlm_engine
+                .analyze_screen_with_context(&image, context.as_deref())
+                .await?
         };
 
-        // 4. 提取 OCR 数据
-        let ocr_text = VlmEngine::get_text_for_embedding(&description);
-        let ocr_json = serde_json::to_string(&description)?;
+        // 4. 轻量 OCR 文本（写回 trace）
+        let ocr_text = description
+            .text_content
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| description.summary.clone());
 
-        // 5. 更新数据库（OCR 数据）
-        db.update_trace_ocr(trace.id, &ocr_text, &ocr_json)?;
+        // 5. 更新数据库（trace 仅保留轻量 OCR 文本）
+        db.update_trace_ocr_text(trace.id, &ocr_text)?;
 
-        // 6. 生成嵌入向量（异步操作）
+        // 6. 生成嵌入向量（可使用更丰富的文本，不必写回 trace）
+        let embedding_text = VlmEngine::get_text_for_embedding(&description);
         let embedding = {
             let embedder_guard = embedder.read().await;
-            embedder_guard.embed(&ocr_text).await?
+            embedder_guard.embed(&embedding_text).await?
         };
 
         // 7. 序列化嵌入向量
@@ -313,6 +372,26 @@ impl VlmTask {
 
         // 8. 更新数据库（嵌入向量）
         db.update_trace_embedding(trace.id, &embedding_bytes)?;
+
+        // 9. 把 VLM 结论同步到 Session（对外的核心视图）
+        if let Some(sid) = session_id {
+            let is_key_action = description.is_key_action;
+            let action_description = description.action_description.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+            let raw_json = serde_json::to_string(&description).ok();
+            db.append_activity_session_event(
+                sid,
+                trace.id,
+                trace.timestamp,
+                Some(description.summary.as_str()),
+                action_description,
+                description.activity_type.as_deref(),
+                Some(description.confidence),
+                &description.entities,
+                raw_json.as_deref(),
+                is_key_action,
+            )?;
+        }
 
         info!(
             "Trace {} processed: summary='{}', confidence={:.2}",
@@ -322,6 +401,44 @@ impl VlmTask {
         );
 
         Ok(())
+    }
+
+    fn format_key_actions_for_context(key_actions_json: &str) -> Option<String> {
+        use serde_json::Value;
+
+        let v: Value = serde_json::from_str(key_actions_json).ok()?;
+        let arr = v.as_array()?;
+        if arr.is_empty() {
+            return None;
+        }
+
+        // 只给模型一个简短“已标记关键行为”清单，避免把 JSON 全量塞进上下文。
+        let mut lines: Vec<String> = Vec::new();
+        for it in arr.iter().rev().take(10).rev() {
+            let ts = it.get("timestamp").and_then(|x| x.as_i64()).unwrap_or(0);
+            let text = it
+                .get("action_description")
+                .and_then(|x| x.as_str())
+                .or_else(|| it.get("summary").and_then(|x| x.as_str()))
+                .unwrap_or("")
+                .trim();
+            if text.is_empty() {
+                continue;
+            }
+            let time = chrono::DateTime::from_timestamp_millis(ts)
+                .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+                .unwrap_or_else(|| "?".to_string());
+            lines.push(format!("- [{}] {}", time, text));
+        }
+
+        let count = arr.len();
+        let header = if count >= 20 {
+            "【Existing Key Actions（已达上限20，请更保守）】"
+        } else {
+            "【Existing Key Actions（参考）】"
+        };
+
+        Some(format!("{}\n{}", header, lines.join("\n")))
     }
 
     /// 加载图片
@@ -337,4 +454,5 @@ impl VlmTask {
             .flat_map(|f| f.to_le_bytes())
             .collect()
     }
+
 }

@@ -269,12 +269,12 @@ impl EngramDaemon {
             window_h: context.bounds.map(|b| b.3),
             is_idle: false,
             ocr_text: None,
-            ocr_json: None,
             phash: Some(phash_hex.into_bytes()),
         };
 
-        db.insert_trace(&trace)?;
+        let (trace_id, session_id) = db.insert_trace(&trace)?;
         debug!("Frame saved: {}", trace.image_path);
+        debug!("Trace inserted: id={}, session_id={:?}", trace_id, session_id);
 
         Ok(())
     }

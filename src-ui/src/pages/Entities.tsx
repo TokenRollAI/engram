@@ -19,6 +19,8 @@ interface Trace {
   app_name: string | null;
   window_title: string | null;
   ocr_text: string | null;
+  activity_session_id?: number | null;
+  is_key_action?: boolean;
 }
 
 const Entities: Component = () => {

@@ -26,6 +26,12 @@ pub struct ScreenDescription {
     pub activity_type: Option<String>,
     /// 关键实体（人名、项目名、URL 等）
     pub entities: Vec<String>,
+    /// 是否关键行为（用于聚合到 Session 的 key_actions）
+    #[serde(default)]
+    pub is_key_action: bool,
+    /// 关键行为描述（当 is_key_action=true 时必须提供）
+    #[serde(default)]
+    pub action_description: Option<String>,
     /// 置信度 (0.0 - 1.0)
     pub confidence: f32,
 }
@@ -243,7 +249,7 @@ impl VlmEngine {
         *self.cache_misses.lock().unwrap() += 1;
 
         let image_base64 = self.encode_image(image)?;
-        let result = self.call_api(&image_base64).await?;
+        let result = self.call_api(&image_base64, None).await?;
 
         // 存入缓存
         self.put_cached(image_hash, result.clone());
@@ -251,8 +257,28 @@ impl VlmEngine {
         Ok(result)
     }
 
+    /// 分析屏幕截图（带外部上下文：来自活动 Session + 最近 traces）
+    ///
+    /// 注意：context 会显著影响输出，为避免缓存污染，默认跳过缓存。
+    pub async fn analyze_screen_with_context(
+        &self,
+        image: &RgbImage,
+        context: Option<&str>,
+    ) -> Result<ScreenDescription> {
+        if !self.is_ready {
+            return Err(anyhow!("VLM engine not initialized"));
+        }
+
+        let image_base64 = self.encode_image(image)?;
+        self.call_api(&image_base64, context).await
+    }
+
     /// 分析屏幕截图（带 phash，可利用已有哈希）
-    pub async fn analyze_screen_with_hash(&self, image: &RgbImage, phash: u64) -> Result<ScreenDescription> {
+    pub async fn analyze_screen_with_hash(
+        &self,
+        image: &RgbImage,
+        phash: u64,
+    ) -> Result<ScreenDescription> {
         if !self.is_ready {
             return Err(anyhow!("VLM engine not initialized"));
         }
@@ -267,7 +293,7 @@ impl VlmEngine {
         *self.cache_misses.lock().unwrap() += 1;
 
         let image_base64 = self.encode_image(image)?;
-        let result = self.call_api(&image_base64).await?;
+        let result = self.call_api(&image_base64, None).await?;
 
         // 存入缓存
         self.put_cached(phash, result.clone());
@@ -313,7 +339,8 @@ impl VlmEngine {
         // 如果缓存满了，移除最旧的条目
         if cache.len() >= CACHE_MAX_SIZE {
             // 找到最旧的条目
-            if let Some(oldest_key) = cache.iter()
+            if let Some(oldest_key) = cache
+                .iter()
                 .min_by_key(|(_, v)| v.timestamp)
                 .map(|(k, _)| *k)
             {
@@ -321,10 +348,13 @@ impl VlmEngine {
             }
         }
 
-        cache.insert(hash, CacheEntry {
-            result,
-            timestamp: Instant::now(),
-        });
+        cache.insert(
+            hash,
+            CacheEntry {
+                result,
+                timestamp: Instant::now(),
+            },
+        );
     }
 
     /// 清除过期缓存
@@ -419,26 +449,52 @@ impl VlmEngine {
     }
 
     /// 调用 OpenAI 兼容 API
-    async fn call_api(&self, image_base64: &str) -> Result<ScreenDescription> {
+    async fn call_api(
+        &self,
+        image_base64: &str,
+        context: Option<&str>,
+    ) -> Result<ScreenDescription> {
+        let context_block = context
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                format!(
+                    "以下是同一段用户活动的已知上下文（可能不完整，供参考）：\n{}\n\n请结合上下文与图片进行分析。",
+                    s
+                )
+            });
+
+        let mut content = vec![serde_json::json!({
+            "type": "text",
+            "text": Self::build_prompt()
+        })];
+
+        if let Some(ctx) = context_block {
+            content.insert(
+                0,
+                serde_json::json!({
+                    "type": "text",
+                    "text": ctx
+                }),
+            );
+        }
+
+        content.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": {
+                "url": format!("data:image/jpeg;base64,{}", image_base64)
+            }
+        }));
+
         let request = serde_json::json!({
             "model": self.config.model,
             "messages": [{
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": Self::build_prompt()
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": format!("data:image/jpeg;base64,{}", image_base64)
-                        }
-                    }
-                ]
+                "content": content
             }],
             "max_tokens": self.config.max_tokens,
-            "temperature": self.config.temperature
+            "temperature": self.config.temperature,
+            "response_format": "json_object"
         });
 
         let url = format!("{}/chat/completions", self.config.endpoint);
@@ -486,9 +542,18 @@ impl VlmEngine {
         if let Some(usage) = result.get("usage") {
             info!(
                 "VLM API Usage: prompt_tokens={}, completion_tokens={}, total_tokens={}",
-                usage.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                usage.get("completion_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                usage.get("total_tokens").and_then(|v| v.as_i64()).unwrap_or(0)
+                usage
+                    .get("prompt_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                usage
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                usage
+                    .get("total_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
             );
         }
 
@@ -507,12 +572,8 @@ impl VlmEngine {
 
         // 缩放大图
         let image = if image.width() > 1280 || image.height() > 720 {
-            let resized = image::imageops::resize(
-                image,
-                1280,
-                720,
-                image::imageops::FilterType::Triangle,
-            );
+            let resized =
+                image::imageops::resize(image, 1280, 720, image::imageops::FilterType::Triangle);
             image::DynamicImage::ImageRgb8(resized)
         } else {
             image::DynamicImage::ImageRgb8(image.clone())
@@ -524,7 +585,11 @@ impl VlmEngine {
 
     /// 构建分析 Prompt
     fn build_prompt() -> &'static str {
-        r#"请分析这个屏幕截图，输出以下 JSON 格式（不要输出其他内容）：
+        r#"请分析这个屏幕截图，并结合（如果提供的）同一段活动 Session 上下文，输出以下 JSON 格式（不要输出其他内容）：
+
+关键行为标注规则：
+- 只有当“这条行为不重复，且缺少它会让 Session 的结论不完整”时才标记为关键行为
+- 如果上下文里已经有很多关键行为，请更保守：每个 Session 总关键行为目标不超过 30 条
 ```json
 {
   "summary": "简短描述用户正在做什么（50字以内）",
@@ -532,6 +597,8 @@ impl VlmEngine {
   "detected_app": "检测到的应用或网站名称",
   "activity_type": "活动类型：coding/browsing/reading/writing/communication/media/other",
   "entities": ["提取的关键实体：人名、项目名、URL、文件名等"],
+  "is_key_action": true,
+  "action_description": "如果 is_key_action=true，用一句话客观描述“发生了什么”（不超过80字）；否则为 null",
   "confidence": 0.95
 }
 ```"#
@@ -559,6 +626,8 @@ impl VlmEngine {
                     detected_app: None,
                     activity_type: Some("other".to_string()),
                     entities: Vec::new(),
+                    is_key_action: false,
+                    action_description: None,
                     confidence: 0.5,
                 })
             }

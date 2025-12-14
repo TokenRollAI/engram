@@ -81,7 +81,7 @@
           │                             │                     ▼
           │                             │            ┌─────────────────────┐
           │                             │            │  更新 ocr_text      │
-          │                             │            │  更新 ocr_json      │
+          │                             │            │  写入 Session 事件  │
           │                             │            └────────┬───────────┘
           │                             │                     │
           │                             │                     ▼
@@ -95,9 +95,11 @@
                                         ▼
                                ┌─────────────────────┐
                                │  更新数据库          │
-                               │  (ocr_text/ocr_json)│
+                               │  (trace.ocr_text)   │
                                │  (embedding)        │
                                │  (traces 表)        │
+                               │  (activity_sessions)│
+                               │  (session_events)   │
                                └─────────────────────┘
 ```
 
@@ -107,9 +109,8 @@
 3. **后台分析阶段** (VlmTask - M3.1 新增):
    - VlmTask 定时扫描 `ocr_text IS NULL` 的痕迹
    - 加载截图文件并调用 VLM 进行屏幕理解
-   - 提取结构化描述和文本内容
-   - 生成文本嵌入向量
-   - 更新数据库中的 OCR 数据和嵌入向量
+   - trace 仅更新轻量 `ocr_text` 与 `embedding`，并写入 `is_key_action`
+   - VLM 的结构化结论写入 `activity_session_events`（含 `is_key_action/action_description`），并增量更新 `activity_sessions.context_text/entities_json/key_actions_json`
 
 ## 帧数据结构
 
@@ -160,8 +161,8 @@ struct Trace {
     image_path: String,
     context: FocusContext,
     ocr_text: String,
-    ocr_json: String,  // JSON 序列化的 blocks
     embedding: Vec<f32>,  // 384 维
+    activity_session_id: Option<i64>,
 }
 ```
 

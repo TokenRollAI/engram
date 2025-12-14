@@ -11,7 +11,7 @@
 
 ```sql
 -- ============================================
--- Engram Database Schema v1.0
+-- Engram Database Schema v2.0
 -- ============================================
 
 -- 启用外键约束
@@ -21,7 +21,35 @@ PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
 -- ============================================
--- 核心表: traces (痕迹记录)
+-- 活动会话表: activity_sessions (对外主视图)
+-- ============================================
+CREATE TABLE activity_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    app_name TEXT NOT NULL,
+    start_time INTEGER NOT NULL,
+    end_time INTEGER NOT NULL,
+
+    start_trace_id INTEGER,
+    end_trace_id INTEGER,
+    trace_count INTEGER NOT NULL DEFAULT 0,
+
+    -- 给 UI/Chat 用的“浓缩上下文”，由 VLM 分析结果增量追加、裁剪
+    context_text TEXT,
+    -- 聚合后的实体计数（JSON: { "entity": count, ... }）
+    entities_json TEXT,
+    -- 关键行为列表（JSON 数组）
+    key_actions_json TEXT,
+
+    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+    updated_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+);
+
+CREATE INDEX idx_activity_sessions_time ON activity_sessions(start_time, end_time);
+CREATE INDEX idx_activity_sessions_app ON activity_sessions(app_name);
+
+-- ============================================
+-- 原子事实流: traces (痕迹记录)
 -- ============================================
 CREATE TABLE traces (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,9 +72,14 @@ CREATE TABLE traces (
     -- 系统状态
     is_idle INTEGER DEFAULT 0,
 
-    -- OCR 数据
-    ocr_text TEXT,  -- 纯文本，用于 FTS
-    ocr_json TEXT,  -- JSON: [{text, confidence, bbox}]
+    -- 轻量 OCR/文本（用于 FTS/Embedding/Search）
+    ocr_text TEXT,
+
+    -- 活动会话关联（对外主要暴露 session）
+    activity_session_id INTEGER,
+
+    -- 是否关键行为
+    is_key_action INTEGER DEFAULT 0,
 
     -- 语义向量 (384 维 float32，以 BLOB 存储)
     embedding BLOB,
@@ -55,7 +88,9 @@ CREATE TABLE traces (
     phash BLOB,
 
     -- 元数据
-    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+
+    FOREIGN KEY (activity_session_id) REFERENCES activity_sessions(id) ON DELETE SET NULL
 );
 
 -- 时间索引 (最常用的查询条件)
@@ -63,6 +98,35 @@ CREATE INDEX idx_traces_timestamp ON traces(timestamp);
 
 -- 应用名索引
 CREATE INDEX idx_traces_app ON traces(app_name);
+
+-- Session 索引
+CREATE INDEX idx_traces_session ON traces(activity_session_id);
+
+-- ============================================
+-- 会话事件: activity_session_events (每条 trace 的 VLM 结论)
+-- ============================================
+CREATE TABLE activity_session_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    trace_id INTEGER NOT NULL,
+    timestamp INTEGER NOT NULL,
+
+    summary TEXT,
+    action_description TEXT,
+    activity_type TEXT,
+    confidence REAL,
+    entities_json TEXT,
+    raw_json TEXT,
+    is_key_action INTEGER DEFAULT 0,
+
+    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+
+    FOREIGN KEY (session_id) REFERENCES activity_sessions(id) ON DELETE CASCADE,
+    FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_session_events_session_time
+    ON activity_session_events(session_id, timestamp);
 
 -- ============================================
 -- 全文检索虚拟表
@@ -337,7 +401,12 @@ WHERE trace_id IN (
 );
 
 UPDATE traces
-SET ocr_json = NULL, embedding = NULL
+SET embedding = NULL
+WHERE timestamp < (strftime('%s', 'now') - 30 * 86400) * 1000;
+
+-- 可选：清理会话事件的 raw_json（保留聚合后的 session 结论即可）
+UPDATE activity_session_events
+SET raw_json = NULL
 WHERE timestamp < (strftime('%s', 'now') - 30 * 86400) * 1000;
 ```
 

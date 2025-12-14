@@ -9,6 +9,7 @@ interface Settings {
   hot_data_days: number;
   warm_data_days: number;
   summary_interval_min: number;
+  session_gap_threshold_ms: number;
 }
 
 interface StorageStats {
@@ -314,6 +315,26 @@ const Settings: Component = () => {
                   />
                   <p class="text-xs text-foreground-secondary mt-1">
                     越小越严格，相似帧会被跳过
+                  </p>
+                </div>
+
+                <div>
+                  <label class="block text-sm text-foreground-secondary mb-1">
+                    Session 断开阈值 (分钟)
+                  </label>
+                  <input
+                    type="number"
+                    value={Math.round(settings()!.session_gap_threshold_ms / 60000)}
+                    onInput={(e) => {
+                      const minutes = parseInt(e.currentTarget.value) || 5;
+                      updateSetting("session_gap_threshold_ms", Math.max(60_000, minutes * 60_000));
+                    }}
+                    min={1}
+                    max={240}
+                    class="w-full px-3 py-2 bg-background border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-accent"
+                  />
+                  <p class="text-xs text-foreground-secondary mt-1">
+                    同一应用两次活动间隔超过该阈值，会切分为新的活动 Session
                   </p>
                 </div>
               </div>
@@ -659,8 +680,8 @@ const Settings: Component = () => {
                     }`}
                   >
                     <span
-                      class={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                        aiConfig()!.vlm_task.enabled ? "translate-x-7" : "translate-x-1"
+                      class={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
+                        aiConfig()!.vlm_task.enabled ? "translate-x-6" : "translate-x-0"
                       }`}
                     />
                   </button>
