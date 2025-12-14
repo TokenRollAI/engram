@@ -478,23 +478,23 @@ pub async fn get_ai_config(state: State<'_, AppState>) -> Result<AiConfig, Strin
 
 /// 更新 AI 配置
 #[tauri::command]
-pub async fn update_ai_config(state: State<'_, AppState>, ai_config: AiConfig) -> Result<(), String> {
+pub async fn update_ai_config(state: State<'_, AppState>, config: AiConfig) -> Result<(), String> {
     info!(
         "update_ai_config: vlm.endpoint={}, embedding.endpoint={:?}, vlm_task.concurrency={}",
-        ai_config.vlm.endpoint, ai_config.embedding.endpoint, ai_config.vlm_task.concurrency
+        config.vlm.endpoint, config.embedding.endpoint, config.vlm_task.concurrency
     );
 
     // 更新配置并保存到文件
     {
-        let mut config = state.config.write().await;
-        config.vlm = ai_config.vlm.clone();
-        config.embedding = ai_config.embedding.clone();
-        config.vlm_task = ai_config.vlm_task.clone();
-        config.save().map_err(|e| e.to_string())?;
+        let mut app_config = state.config.write().await;
+        app_config.vlm = config.vlm.clone();
+        app_config.embedding = config.embedding.clone();
+        app_config.vlm_task = config.vlm_task.clone();
+        app_config.save().map_err(|e| e.to_string())?;
     }
 
     // 重新初始化 AI 模块
-    reinitialize_ai(&state, &ai_config).await?;
+    reinitialize_ai(&state, &config).await?;
 
     Ok(())
 }
