@@ -36,6 +36,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_capture_status,
+            commands::start_daemon,
+            commands::stop_daemon,
             commands::toggle_capture,
             commands::capture_now,
             commands::get_traces,
@@ -45,6 +47,8 @@ fn main() {
             commands::get_storage_stats,
             commands::initialize_ai,
             commands::get_ai_status,
+            commands::get_ai_config,
+            commands::update_ai_config,
         ])
         .build(tauri::generate_context!())
         .expect("Failed to build Tauri application")

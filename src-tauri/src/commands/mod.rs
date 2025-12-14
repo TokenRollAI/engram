@@ -2,6 +2,7 @@
 //!
 //! 提供前端调用的 API 接口。
 
+use crate::ai::{EmbeddingConfig, VlmConfig};
 use crate::daemon::DaemonStatus;
 use crate::db::models::{SearchResult, Settings, StorageStats, Trace};
 use crate::AppState;
@@ -13,6 +14,23 @@ use tracing::{debug, info, warn};
 pub async fn get_capture_status(state: State<'_, AppState>) -> Result<DaemonStatus, String> {
     let daemon = state.daemon.read().await;
     Ok(daemon.status())
+}
+
+/// 启动守护进程
+#[tauri::command]
+pub async fn start_daemon(state: State<'_, AppState>) -> Result<(), String> {
+    info!("Starting daemon...");
+    let mut daemon = state.daemon.write().await;
+    daemon.start().map_err(|e| e.to_string())
+}
+
+/// 停止守护进程
+#[tauri::command]
+pub async fn stop_daemon(state: State<'_, AppState>) -> Result<(), String> {
+    info!("Stopping daemon...");
+    let mut daemon = state.daemon.write().await;
+    daemon.stop();
+    Ok(())
 }
 
 /// 切换暂停/恢复
@@ -251,4 +269,141 @@ pub struct AiStatus {
     pub embedder_ready: bool,
     pub pending_analysis_count: u64,
     pub pending_embedding_count: u64,
+}
+
+/// AI 配置响应
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AiConfig {
+    pub vlm: VlmConfig,
+    pub embedding: EmbeddingConfig,
+}
+
+/// 获取 AI 配置
+#[tauri::command]
+pub async fn get_ai_config(state: State<'_, AppState>) -> Result<AiConfig, String> {
+    debug!("get_ai_config");
+
+    // 从数据库读取配置
+    let vlm_config = load_vlm_config_from_db(&state.db);
+    let embedding_config = load_embedding_config_from_db(&state.db);
+
+    Ok(AiConfig {
+        vlm: vlm_config,
+        embedding: embedding_config,
+    })
+}
+
+/// 更新 AI 配置
+#[tauri::command]
+pub async fn update_ai_config(
+    state: State<'_, AppState>,
+    config: AiConfig,
+) -> Result<(), String> {
+    info!("update_ai_config: vlm.endpoint={}, embedding.endpoint={:?}",
+          config.vlm.endpoint, config.embedding.endpoint);
+
+    // 保存 VLM 配置到数据库
+    state.db.set_setting("vlm_endpoint", &config.vlm.endpoint).map_err(|e| e.to_string())?;
+    state.db.set_setting("vlm_model", &config.vlm.model).map_err(|e| e.to_string())?;
+    state.db.set_setting("vlm_api_key", config.vlm.api_key.as_deref().unwrap_or("")).map_err(|e| e.to_string())?;
+    state.db.set_setting("vlm_max_tokens", &config.vlm.max_tokens.to_string()).map_err(|e| e.to_string())?;
+    state.db.set_setting("vlm_temperature", &config.vlm.temperature.to_string()).map_err(|e| e.to_string())?;
+
+    // 保存 Embedding 配置到数据库
+    state.db.set_setting("embedding_endpoint", config.embedding.endpoint.as_deref().unwrap_or("")).map_err(|e| e.to_string())?;
+    state.db.set_setting("embedding_model", &config.embedding.model).map_err(|e| e.to_string())?;
+    state.db.set_setting("embedding_api_key", config.embedding.api_key.as_deref().unwrap_or("")).map_err(|e| e.to_string())?;
+
+    // 重新初始化 AI 模块
+    reinitialize_ai(&state, &config).await?;
+
+    Ok(())
+}
+
+/// 从数据库加载 VLM 配置
+fn load_vlm_config_from_db(db: &crate::db::Database) -> VlmConfig {
+    let mut config = VlmConfig::default();
+
+    if let Ok(Some(v)) = db.get_setting("vlm_endpoint") {
+        if !v.is_empty() {
+            config.endpoint = v;
+        }
+    }
+    if let Ok(Some(v)) = db.get_setting("vlm_model") {
+        if !v.is_empty() {
+            config.model = v;
+        }
+    }
+    if let Ok(Some(v)) = db.get_setting("vlm_api_key") {
+        if !v.is_empty() {
+            config.api_key = Some(v);
+        }
+    }
+    if let Ok(Some(v)) = db.get_setting("vlm_max_tokens") {
+        config.max_tokens = v.parse().unwrap_or(config.max_tokens);
+    }
+    if let Ok(Some(v)) = db.get_setting("vlm_temperature") {
+        config.temperature = v.parse().unwrap_or(config.temperature);
+    }
+
+    config
+}
+
+/// 从数据库加载 Embedding 配置
+fn load_embedding_config_from_db(db: &crate::db::Database) -> EmbeddingConfig {
+    let mut config = EmbeddingConfig::default();
+
+    if let Ok(Some(v)) = db.get_setting("embedding_endpoint") {
+        if !v.is_empty() {
+            config.endpoint = Some(v);
+        }
+    }
+    if let Ok(Some(v)) = db.get_setting("embedding_model") {
+        if !v.is_empty() {
+            config.model = v;
+        }
+    }
+    if let Ok(Some(v)) = db.get_setting("embedding_api_key") {
+        if !v.is_empty() {
+            config.api_key = Some(v);
+        }
+    }
+
+    config
+}
+
+/// 重新初始化 AI 模块
+async fn reinitialize_ai(state: &State<'_, AppState>, config: &AiConfig) -> Result<(), String> {
+    // 重新初始化 VLM
+    {
+        let vlm_config = config.vlm.clone();
+        let mut engine = crate::ai::VlmEngine::new(vlm_config);
+        match engine.initialize().await {
+            Ok(_) => {
+                info!("VLM re-initialized with new config");
+                *state.vlm.write().await = Some(engine);
+            }
+            Err(e) => {
+                warn!("Failed to initialize VLM with new config: {}", e);
+                *state.vlm.write().await = None;
+            }
+        }
+    }
+
+    // 重新初始化 Embedding
+    {
+        let embedding_config = config.embedding.clone();
+        let mut embedder = crate::ai::TextEmbedder::with_config(embedding_config);
+        match embedder.initialize().await {
+            Ok(_) => {
+                info!("Embedder re-initialized with new config");
+                *state.embedder.write().await = embedder;
+            }
+            Err(e) => {
+                warn!("Failed to initialize embedder with new config: {}", e);
+            }
+        }
+    }
+
+    Ok(())
 }

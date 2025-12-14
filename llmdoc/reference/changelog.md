@@ -6,6 +6,171 @@
 
 ---
 
+## [Phase 2 M2.5 用户控制与 AI 配置] - 2025-12-14
+
+### 发布内容
+
+**版本**: Phase 2 (The Brain) - 用户控制增强
+
+**变更类型**: 新增功能 - 录制控制和 AI 配置界面
+
+#### 新增功能
+
+##### 1. 录制控制按钮
+
+用户现在可以通过 UI 手动控制录制流程：
+
+- **开始录制**: 启动 daemon 开始截图循环
+- **暂停录制**: 暂停但保持 daemon 运行
+- **恢复录制**: 从暂停状态恢复
+- **停止录制**: 完全停止 daemon
+
+**实现文件**:
+- `src-tauri/src/commands/mod.rs` - 新增 `start_daemon`, `stop_daemon` 命令
+- `src-tauri/src/main.rs` - 注册新命令
+- `src-ui/src/App.tsx` - 添加录制控制按钮 UI
+
+##### 2. AI 模型配置界面
+
+设置页面新增 "AI 模型配置" Tab，支持配置 VLM 和嵌入模型：
+
+**VLM 配置选项**:
+- API 端点 (endpoint)
+- 模型名称 (model)
+- API 密钥 (api_key)
+- 最大 Tokens (max_tokens)
+- 温度参数 (temperature)
+
+**嵌入模型配置选项**:
+- API 端点 (留空使用本地 MiniLM)
+- 模型名称
+- API 密钥
+
+**快速预设**:
+- VLM: Ollama、vLLM、LM Studio、OpenAI、Together AI
+- 嵌入: 本地 (MiniLM)、Ollama、OpenAI
+
+##### 3. AI 配置持久化
+
+配置通过 SQLite settings 表持久化存储：
+
+```
+vlm_endpoint, vlm_model, vlm_api_key, vlm_max_tokens, vlm_temperature
+embedding_endpoint, embedding_model, embedding_api_key
+```
+
+保存配置后会自动重新初始化 AI 模块。
+
+#### 代码变更摘要
+
+**后端 (Rust)**:
+
+`src-tauri/src/commands/mod.rs`:
+```rust
+// 新增命令
+pub async fn start_daemon(...) -> Result<(), String>;
+pub async fn stop_daemon(...) -> Result<(), String>;
+pub async fn get_ai_config(...) -> Result<AiConfig, String>;
+pub async fn update_ai_config(..., config: AiConfig) -> Result<(), String>;
+
+// 新增结构体
+pub struct AiConfig {
+    pub vlm: VlmConfig,
+    pub embedding: EmbeddingConfig,
+}
+
+// 新增辅助函数
+fn load_vlm_config_from_db(db: &Database) -> VlmConfig;
+fn load_embedding_config_from_db(db: &Database) -> EmbeddingConfig;
+async fn reinitialize_ai(state, config) -> Result<(), String>;
+```
+
+`src-tauri/src/main.rs`:
+```rust
+// 注册新命令
+commands::start_daemon,
+commands::stop_daemon,
+commands::get_ai_config,
+commands::update_ai_config,
+```
+
+**前端 (TypeScript/SolidJS)**:
+
+`src-ui/src/App.tsx`:
+- 新增 `startRecording()`, `stopRecording()`, `togglePause()` 函数
+- 添加录制控制按钮区域
+
+`src-ui/src/pages/Settings.tsx`:
+- 新增 Tab 切换 (捕获设置 / AI 模型配置)
+- 新增 AI 状态显示
+- 新增 VLM 配置表单
+- 新增嵌入模型配置表单
+- 新增快速预设按钮
+
+#### 用户界面变化
+
+**侧边栏新增**:
+```
+┌─────────────┐
+│  Engram     │
+│  语义记忆   │
+├─────────────┤
+│ 📅 时间线   │
+│ 🔍 搜索     │
+│ ⚙️ 设置     │
+├─────────────┤
+│ [开始录制]  │ ← 新增
+│ [暂停录制]  │ ← 录制中显示
+│ [停止录制]  │ ← 录制中显示
+├─────────────┤
+│ ● 录制中    │
+│ 今日截图: N │
+└─────────────┘
+```
+
+**设置页面新增**:
+```
+[捕获设置] [AI 模型配置] ← Tab 切换
+
+AI 模型配置 Tab:
+┌─────────────────────────────┐
+│ 🤖 AI 状态                   │
+│ ● VLM 引擎: 已就绪/未连接    │
+│ ● 嵌入模型: 已就绪/未初始化  │
+├─────────────────────────────┤
+│ 👁️ VLM 视觉理解模型          │
+│ 快速预设: [Ollama] [vLLM]...│
+│ API 端点: [____________]    │
+│ 模型名称: [____________]    │
+│ API 密钥: [____________]    │
+│ 最大 Tokens: [___] 温度: [_]│
+├─────────────────────────────┤
+│ 🔤 文本嵌入模型              │
+│ 快速预设: [本地] [Ollama]...│
+│ API 端点: [____________]    │
+│ 模型名称: [____________]    │
+│ API 密钥: [____________]    │
+├─────────────────────────────┤
+│              [保存 AI 配置]  │
+└─────────────────────────────┘
+```
+
+#### 解决的问题
+
+1. **问题**: 启动后没有开始截图/识别
+   - **原因**: `EngramDaemon::start()` 从未被调用
+   - **解决**: 添加前端"开始录制"按钮，调用 `start_daemon` 命令
+
+2. **问题**: 没有地方配置 OpenAI 的 VLM 模型/嵌入模型
+   - **原因**: 配置系统存在但未暴露给用户
+   - **解决**: 在设置页面添加完整的 AI 配置界面，支持持久化
+
+#### 文档更新
+
+- `llmdoc/reference/changelog.md` - 本条目
+
+---
+
 ## [Phase 2 M2.1 架构升级 - OpenAI 兼容 API] - 2025-12-14 (修订)
 
 ### 发布内容
