@@ -974,7 +974,7 @@ pub async fn trigger_summary(
 
         // 使用 VLM 配置重新初始化 SummarizerTask
         state
-            .start_summarizer_task_with_config(vlm_config)
+            .start_summarizer_task_with_vlm_config(vlm_config)
             .await
             .map_err(|e| format!("初始化摘要任务失败: {}", e))?;
     } else {
