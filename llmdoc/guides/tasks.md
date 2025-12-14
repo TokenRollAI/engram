@@ -55,10 +55,10 @@ T{Phase}.{Milestone}.{Task}
   - 处理暂停/恢复控制
   - shutdown 信号处理
 
-- [~] **T1.2.3** 实现 WebP 压缩存储
-  - 当前使用 PNG 格式 (WebP 编码待优化)
+- [x] **T1.2.3** 实现 WebP 压缩存储
+  - 使用 `image::codecs::webp::WebPEncoder` 实现无损 WebP 编码
   - 创建存储目录结构 `~/.engram/screenshots/YYYY/MM/DD/`
-  - 生成文件名 `{timestamp_ms}.png`
+  - 生成文件名 `{timestamp_ms}.webp`
 
 - [x] **T1.2.4** 实现感知哈希去重
   - 实现 dHash (差值哈希) 算法
@@ -68,15 +68,17 @@ T{Phase}.{Milestone}.{Task}
 
 ### M1.3: 上下文感知
 
-- [~] **T1.3.1** 集成窗口信息获取
+- [x] **T1.3.1** 集成窗口信息获取
   - 创建 `src-tauri/src/daemon/context.rs`
   - 定义 `FocusContext` 结构体
-  - 平台特定实现占位符 (待完善)
+  - Linux 实现完成 (通过 X11 协议获取 _NET_WM_NAME, WM_CLASS, _NET_WM_PID, 几何信息)
+  - 基础实现供 Windows/macOS 扩展
 
-- [ ] **T1.3.2** 集成 user-idle-time
+- [x] **T1.3.2** 集成 user-idle-time
+  - 添加依赖: `user-idle = "0.6"`
+  - 创建 `IdleDetector` 结构体 (在 `src-tauri/src/daemon/idle.rs`)
   - 检测闲置时间 > 30s
-  - 闲置时暂停截图
-  - 活动时立即恢复
+  - 闲置时自动暂停截图，活动时恢复
 
 - [x] **T1.3.3** 实现规则黑名单过滤
   - 创建 `blacklist` 表
@@ -131,44 +133,56 @@ T{Phase}.{Milestone}.{Task}
 
 ## Phase 2: 深度认知
 
-### M2.1: OCR 引擎集成
+### M2.1: VLM 引擎集成 (OpenAI 兼容 API)
 
-- [ ] **T2.1.1** 集成 ort (ONNX Runtime)
-  - 添加 `ort` 依赖
-  - 配置动态链接
-  - 测试基础推理
+- [x] **T2.1.1** 移除 PaddleOCR 和 ONNX Runtime
+  - 删除 `src-tauri/src/ai/ocr.rs`
+  - 移除 `ort`, `ndarray`, `tokenizers` 依赖
+  - 完成日期: 2025-12-14
 
-- [ ] **T2.1.2** 实现 PaddleOCR 检测管道
-  - 加载 `ppocr_det_v4.onnx`
-  - 实现图像预处理
-  - 实现 DB 后处理
+- [x] **T2.1.2** 实现 OpenAI 兼容 API 支持
+  - 新增文件: `src-tauri/src/ai/vlm.rs` (~400 行)
+  - 实现 HTTP API 客户端
+  - 支持任意 OpenAI 兼容后端
+  - 完成日期: 2025-12-14
 
-- [ ] **T2.1.3** 实现 PaddleOCR 识别管道
-  - 加载 `ppocr_rec_v4.onnx`
-  - 实现文本行裁剪
-  - 实现 CTC 解码
+- [x] **T2.1.3** 实现灵活的配置系统
+  - 创建 `VlmConfig` 结构体
+  - 实现 `ollama()`、`openai()`、`custom()` 预设
+  - 支持 API 密钥管理
+  - 完成日期: 2025-12-14
 
-- [ ] **T2.1.4** 优化各平台执行提供者
-  - macOS: 启用 CoreML
-  - Windows: 启用 DirectML
-  - Linux: 检测 CUDA 可用性
+- [x] **T2.1.4** 实现自动检测和初始化
+  - 实现 `VlmEngine::auto_detect()` 方法
+  - 自动检测常见本地服务 (Ollama、vLLM、LM Studio)
+  - 实现 `initialize()` 验证连接
+  - 完成日期: 2025-12-14
+
+- [x] **T2.1.5** 实现结构化输出
+  - 创建 `ScreenDescription` 结构体
+  - 新增 `confidence` 字段
+  - 改进字段为 `Option<String>`（向后兼容）
+  - 完成日期: 2025-12-14
 
 ### M2.2: 向量嵌入
 
-- [ ] **T2.2.1** 集成 fastembed-rs
-  - 添加依赖
-  - 初始化 MiniLM 模型
-  - 实现 `embed_text()` 函数
+- [x] **T2.2.1** 集成 fastembed-rs
+  - 新增文件: `src-tauri/src/ai/embedding.rs`
+  - 使用 all-MiniLM-L6-v2 模型（384 维向量）
+  - 实现批量嵌入和嵌入队列
+  - 完成日期: 2025-12-14
 
-- [ ] **T2.2.2** 集成 sqlite-vec
-  - 编译 sqlite-vec 扩展
-  - 创建 `traces_vec` 虚拟表
-  - 测试向量插入与检索
+- [x] **T2.2.2** 向量存储与检索
+  - 修改文件: `src-tauri/src/db/mod.rs`
+  - 实现 `search_by_embedding()` 暴力搜索
+  - 向量以 BLOB 形式存储在 traces.embedding 字段
+  - 完成日期: 2025-12-14
 
-- [ ] **T2.2.3** 实现混合搜索
-  - 实现 RRF 分数融合
-  - 创建统一搜索 API
-  - 添加时间范围过滤
+- [x] **T2.2.3** 实现混合搜索
+  - 实现 `hybrid_search()` RRF 融合算法
+  - k=60 的 RRF 常数配置
+  - FTS5 + 向量检索结合
+  - 完成日期: 2025-12-14
 
 - [ ] **T2.2.4** (可选) 集成 CLIP 视觉嵌入
   - 加载 CLIP 模型
@@ -283,11 +297,11 @@ T{Phase}.{Milestone}.{Task}
 
 | 阶段 | 总任务 | 已完成 | 进行中 | 完成率 |
 |------|--------|--------|--------|--------|
-| Phase 1 | 17 | 14 | 2 | 82% |
-| Phase 2 | 15 | 0 | 0 | 0% |
+| Phase 1 | 17 | 17 | 0 | 100% |
+| Phase 2 | 15 | 7 | 0 | 47% |
 | Phase 3 | 13 | 0 | 0 | 0% |
 | Phase 4 | 13 | 0 | 0 | 0% |
-| **总计** | **58** | **14** | **2** | **24%** |
+| **总计** | **58** | **24** | **0** | **41%** |
 
 ## 依赖关系图
 
@@ -314,6 +328,4 @@ T3.1.1 ──► T3.1.2 ──► T3.1.3 ──► T3.2.2 ──► T4.1.4
 
 ## Phase 1 剩余工作
 
-1. **T1.2.3** WebP 压缩 - 当前使用 PNG，需要集成 webp crate 实现压缩
-2. **T1.3.1** 窗口信息 - 需要实现平台特定的窗口信息获取
-3. **T1.3.2** 闲置检测 - 需要集成 user-idle-time crate
+已完成！所有 17 个 Phase 1 任务全部完成。

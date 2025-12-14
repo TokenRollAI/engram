@@ -1,9 +1,6 @@
-import { Component, createSignal, onMount } from "solid-js";
-import { Route, Routes, A, useLocation } from "@solidjs/router";
+import { Component, createSignal, onMount, ParentProps } from "solid-js";
+import { A, useLocation } from "@solidjs/router";
 import { invoke } from "@tauri-apps/api/core";
-import Timeline from "./pages/Timeline";
-import Search from "./pages/Search";
-import Settings from "./pages/Settings";
 
 // 类型定义
 interface DaemonStatus {
@@ -14,7 +11,7 @@ interface DaemonStatus {
   total_captures_today: number;
 }
 
-const App: Component = () => {
+const App: Component<ParentProps> = (props) => {
   const location = useLocation();
   const [status, setStatus] = createSignal<DaemonStatus | null>(null);
 
@@ -99,11 +96,7 @@ const App: Component = () => {
 
       {/* 主内容区 */}
       <main class="flex-1 overflow-hidden">
-        <Routes>
-          <Route path="/" component={Timeline} />
-          <Route path="/search" component={Search} />
-          <Route path="/settings" component={Settings} />
-        </Routes>
+        {props.children}
       </main>
     </div>
   );

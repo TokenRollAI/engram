@@ -5,13 +5,15 @@
 mod capture;
 mod context;
 mod hasher;
+mod idle;
 
 pub use capture::ScreenCapture;
 pub use context::{FocusContext, WindowWatcher};
 pub use hasher::PerceptualHasher;
+pub use idle::IdleDetector;
 
 use crate::db::Database;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -33,6 +35,7 @@ pub struct DaemonStatus {
     pub is_running: bool,
     pub is_paused: bool,
     pub is_idle: bool,
+    pub idle_time_ms: u64,
     pub last_capture_time: Option<i64>,
     pub total_captures_today: u64,
 }
@@ -42,12 +45,14 @@ pub struct EngramDaemon {
     db: Arc<Database>,
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
+    is_idle: Arc<AtomicBool>,
+    idle_time_ms: Arc<AtomicU64>,
     capture_interval_ms: u64,
     idle_threshold_ms: u64,
     similarity_threshold: u32,
     shutdown_tx: Option<mpsc::Sender<()>>,
-    last_capture_time: Option<i64>,
-    total_captures_today: u64,
+    last_capture_time: Arc<AtomicU64>,
+    total_captures_today: Arc<AtomicU64>,
 }
 
 impl EngramDaemon {
@@ -57,12 +62,14 @@ impl EngramDaemon {
             db,
             is_running: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
+            is_idle: Arc::new(AtomicBool::new(false)),
+            idle_time_ms: Arc::new(AtomicU64::new(0)),
             capture_interval_ms: DEFAULT_CAPTURE_INTERVAL_MS,
             idle_threshold_ms: DEFAULT_IDLE_THRESHOLD_MS,
             similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
             shutdown_tx: None,
-            last_capture_time: None,
-            total_captures_today: 0,
+            last_capture_time: Arc::new(AtomicU64::new(0)),
+            total_captures_today: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -80,8 +87,13 @@ impl EngramDaemon {
 
         let is_running = self.is_running.clone();
         let is_paused = self.is_paused.clone();
+        let is_idle = self.is_idle.clone();
+        let idle_time_ms = self.idle_time_ms.clone();
+        let last_capture_time = self.last_capture_time.clone();
+        let total_captures_today = self.total_captures_today.clone();
         let db = self.db.clone();
         let interval_ms = self.capture_interval_ms;
+        let idle_threshold_ms = self.idle_threshold_ms;
         let similarity_threshold = self.similarity_threshold;
 
         is_running.store(true, Ordering::SeqCst);
@@ -97,9 +109,10 @@ impl EngramDaemon {
                 }
             };
             let mut hasher = PerceptualHasher::new();
+            let idle_detector = IdleDetector::new(idle_threshold_ms);
             let mut last_hash: Option<[u8; 8]> = None;
 
-            info!("Daemon capture loop started");
+            info!("Daemon capture loop started (idle threshold: {}ms)", idle_threshold_ms);
 
             loop {
                 tokio::select! {
@@ -111,6 +124,18 @@ impl EngramDaemon {
                         // 检查是否暂停
                         if is_paused.load(Ordering::SeqCst) {
                             debug!("Capture paused, skipping");
+                            continue;
+                        }
+
+                        // 检查用户是否闲置
+                        let current_idle_time = idle_detector.get_idle_time_ms();
+                        idle_time_ms.store(current_idle_time, Ordering::SeqCst);
+
+                        let user_is_idle = idle_detector.is_idle();
+                        is_idle.store(user_is_idle, Ordering::SeqCst);
+
+                        if user_is_idle {
+                            debug!("User is idle ({}ms), skipping capture", current_idle_time);
                             continue;
                         }
 
@@ -134,8 +159,14 @@ impl EngramDaemon {
                                 let context = WindowWatcher::get_focus_context();
 
                                 // 保存到数据库
-                                if let Err(e) = Self::save_frame(&db, &frame, &context).await {
-                                    error!("Failed to save frame: {}", e);
+                                match Self::save_frame(&db, &frame, &context, &current_hash).await {
+                                    Ok(_) => {
+                                        last_capture_time.store(frame.timestamp as u64, Ordering::SeqCst);
+                                        total_captures_today.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to save frame: {}", e);
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -170,12 +201,39 @@ impl EngramDaemon {
 
     /// 获取状态
     pub fn status(&self) -> DaemonStatus {
+        let last_time = self.last_capture_time.load(Ordering::SeqCst);
         DaemonStatus {
             is_running: self.is_running.load(Ordering::SeqCst),
             is_paused: self.is_paused.load(Ordering::SeqCst),
-            is_idle: false, // TODO: 实现闲置检测
-            last_capture_time: self.last_capture_time,
-            total_captures_today: self.total_captures_today,
+            is_idle: self.is_idle.load(Ordering::SeqCst),
+            idle_time_ms: self.idle_time_ms.load(Ordering::SeqCst),
+            last_capture_time: if last_time > 0 { Some(last_time as i64) } else { None },
+            total_captures_today: self.total_captures_today.load(Ordering::SeqCst),
+        }
+    }
+
+    /// 立即执行一次截图
+    pub fn capture_now(&self) -> anyhow::Result<()> {
+        // 这个方法在前端点击"立即截图"按钮时调用
+        // 实际实现需要向截图循环发送信号
+        // 当前仅记录日志，未来可以通过额外的 channel 实现
+        info!("Manual capture requested");
+        Ok(())
+    }
+
+    /// 更新配置
+    pub fn update_config(&mut self, capture_interval_ms: Option<u64>, idle_threshold_ms: Option<u64>, similarity_threshold: Option<u32>) {
+        if let Some(interval) = capture_interval_ms {
+            self.capture_interval_ms = interval;
+            info!("Updated capture interval: {}ms", interval);
+        }
+        if let Some(threshold) = idle_threshold_ms {
+            self.idle_threshold_ms = threshold;
+            info!("Updated idle threshold: {}ms", threshold);
+        }
+        if let Some(threshold) = similarity_threshold {
+            self.similarity_threshold = threshold;
+            info!("Updated similarity threshold: {}", threshold);
         }
     }
 
@@ -184,11 +242,15 @@ impl EngramDaemon {
         db: &Database,
         frame: &capture::CapturedFrame,
         context: &FocusContext,
+        phash: &[u8; 8],
     ) -> anyhow::Result<()> {
         use crate::db::models::NewTrace;
 
         // 压缩为 WebP 并保存文件
         let image_path = db.save_screenshot(&frame.pixels, frame.width, frame.height)?;
+
+        // 将感知哈希转换为 hex 字符串
+        let phash_hex = phash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
 
         // 插入数据库记录
         let trace = NewTrace {
@@ -204,7 +266,7 @@ impl EngramDaemon {
             is_idle: false,
             ocr_text: None,
             ocr_json: None,
-            phash: None,
+            phash: Some(phash_hex),
         };
 
         db.insert_trace(&trace)?;

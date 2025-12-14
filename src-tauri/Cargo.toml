@@ -36,6 +36,15 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
 ] }
 
+# HTTP 客户端 (VLM API)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Base64 编码 (图片传输)
+base64 = "0.22"
+
+# 文本嵌入
+fastembed = "4"
+
 # 错误处理
 anyhow = "1.0"
 thiserror = "2.0"
@@ -55,6 +64,13 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 
 # 屏幕捕获 (跨平台)
 xcap = "0.7.1"
+
+# 用户闲置检测 (跨平台)
+user-idle = "0.6"
+
+# Linux X11 窗口信息
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
 
 [features]
 default = ["custom-protocol"]

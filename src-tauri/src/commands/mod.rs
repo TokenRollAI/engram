@@ -2,11 +2,12 @@
 //!
 //! 提供前端调用的 API 接口。
 
+use crate::ai::TextEmbedder;
 use crate::daemon::DaemonStatus;
 use crate::db::models::{SearchResult, Settings, StorageStats, Trace};
 use crate::AppState;
 use tauri::State;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// 获取截图状态
 #[tauri::command]
@@ -68,23 +69,64 @@ pub async fn search_traces(
         query, mode, limit
     );
 
-    let _mode = mode.unwrap_or_else(|| "keyword".to_string());
+    let mode = mode.unwrap_or_else(|| "keyword".to_string());
     let limit = limit.unwrap_or(20);
 
-    // 当前仅实现关键词搜索，语义搜索在 Phase 2 实现
-    let traces = state
-        .db
-        .search_text(&query, limit)
-        .map_err(|e| e.to_string())?;
+    let results = if mode == "semantic" {
+        // 语义搜索模式
+        let embedder = state.embedder.read().await;
+        if embedder.is_initialized() {
+            // 生成查询向量
+            match embedder.embed(&query) {
+                Ok(query_embedding) => {
+                    // 混合搜索
+                    let hybrid_results = state
+                        .db
+                        .hybrid_search(&query, Some(&query_embedding), limit)
+                        .map_err(|e| e.to_string())?;
 
-    // 转换为 SearchResult
+                    hybrid_results
+                        .into_iter()
+                        .map(|(trace, score)| SearchResult {
+                            trace,
+                            score,
+                            highlights: vec![],
+                        })
+                        .collect()
+                }
+                Err(e) => {
+                    warn!("Failed to embed query: {}", e);
+                    // 回退到 FTS
+                    fallback_fts_search(&state.db, &query, limit)?
+                }
+            }
+        } else {
+            warn!("Embedder not initialized, falling back to FTS");
+            fallback_fts_search(&state.db, &query, limit)?
+        }
+    } else {
+        // 关键词搜索模式
+        fallback_fts_search(&state.db, &query, limit)?
+    };
+
+    Ok(results)
+}
+
+/// FTS 回退搜索
+fn fallback_fts_search(
+    db: &crate::db::Database,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<SearchResult>, String> {
+    let traces = db.search_text(query, limit).map_err(|e| e.to_string())?;
+
     let results: Vec<SearchResult> = traces
         .into_iter()
         .enumerate()
         .map(|(i, trace)| SearchResult {
             trace,
             score: 1.0 - (i as f32 * 0.1).min(0.9),
-            highlights: vec![], // TODO: 实现高亮
+            highlights: vec![],
         })
         .collect();
 
@@ -161,4 +203,53 @@ pub async fn update_settings(
 pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStats, String> {
     debug!("get_storage_stats");
     state.db.get_storage_stats().map_err(|e| e.to_string())
+}
+
+/// 初始化 AI 模块
+#[tauri::command]
+pub async fn initialize_ai(state: State<'_, AppState>) -> Result<bool, String> {
+    info!("Initializing AI modules...");
+    state.initialize_ai().await.map_err(|e| e.to_string())?;
+
+    let vlm_ready = state.is_vlm_ready().await;
+    let embedder = state.embedder.read().await;
+    let embedder_ready = embedder.is_initialized();
+
+    info!(
+        "AI initialization complete: VLM={}, Embedder={}",
+        vlm_ready, embedder_ready
+    );
+
+    Ok(vlm_ready || embedder_ready)
+}
+
+/// 获取 AI 状态
+#[tauri::command]
+pub async fn get_ai_status(state: State<'_, AppState>) -> Result<AiStatus, String> {
+    let vlm_ready = state.is_vlm_ready().await;
+    let embedder = state.embedder.read().await;
+
+    Ok(AiStatus {
+        vlm_ready,
+        embedder_ready: embedder.is_initialized(),
+        pending_analysis_count: state
+            .db
+            .get_traces_pending_ocr(1)
+            .map(|v| v.len())
+            .unwrap_or(0) as u64,
+        pending_embedding_count: state
+            .db
+            .get_traces_pending_embedding(1)
+            .map(|v| v.len())
+            .unwrap_or(0) as u64,
+    })
+}
+
+/// AI 状态响应
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AiStatus {
+    pub vlm_ready: bool,
+    pub embedder_ready: bool,
+    pub pending_analysis_count: u64,
+    pub pending_embedding_count: u64,
 }

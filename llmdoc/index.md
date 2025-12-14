@@ -4,7 +4,7 @@
 
 ## 项目状态
 
-**当前阶段**: Phase 1 执行中 (The Eye - 83% 完成)
+**当前阶段**: Phase 2 进行中 (The Brain - M2.1 & M2.2 已完成, ~35% 进度)
 
 ## 文档索引
 
@@ -17,7 +17,7 @@
 - [系统架构总览](./architecture/system-overview.md) - 四层架构设计
 - [数据流设计](./architecture/data-flow.md) - 数据采集、处理、存储流程
 - [数据库设计](./architecture/database.md) - SQLite Schema 与向量索引
-- [AI 管道设计](./architecture/ai-pipeline.md) - OCR、嵌入、LLM 推理流水线
+- [AI 管道设计](./architecture/ai-pipeline.md) - VLM 视觉理解、文本嵌入、向量搜索流水线
 
 ### 开发指南 (Guides)
 - [开发环境搭建](./guides/dev-setup.md) - 环境准备与依赖安装

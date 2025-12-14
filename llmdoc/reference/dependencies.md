@@ -27,26 +27,33 @@ toml = "0.8"  # 配置文件
 
 ```toml
 # 跨平台截图 (Windows Graphics Capture / ScreenCaptureKit / PipeWire)
-scap = "0.1"
+xcap = "0.7.1"
 
-# 窗口信息
-active-win-pos-rs = "0.8"
+# 用户闲置检测 (跨平台)
+user-idle = "0.6"
 
-# 闲置检测
-user-idle-time = "0.1"
+# Windows 窗口信息
+[target.'cfg(target_os = "windows")'.dependencies]
+# TODO: 待集成 Windows API
+
+# Linux X11 窗口信息
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+
+# macOS 窗口信息
+[target.'cfg(target_os = "macos")'.dependencies]
+# TODO: 待集成 AppKit
 ```
 
 ### 图像处理
 
 ```toml
-# 图像操作
-image = { version = "0.25", features = ["webp"] }
-
-# WebP 编码
-webp = "0.3"
-
-# 感知哈希
-image_hasher = "1.2"  # 或 blockhash
+# 图像操作 (已集成 WebP 编码)
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",  # WebP 支持
+] }
 ```
 
 ### 数据库
@@ -59,23 +66,19 @@ rusqlite = { version = "0.31", features = [
     "functions",     # 自定义函数
 ] }
 
-# 向量搜索扩展
-sqlite-vec = "0.1"  # 需确认实际 crate 名
+# 向量搜索: 通过 BLOB 实现向量存储和 RRF 混合搜索
+# (使用 bincode 序列化向量，存储在 traces.embedding)
 ```
 
 ### AI 推理
 
 ```toml
-# ONNX Runtime (AI 模型推理)
-ort = { version = "2", features = [
-    "load-dynamic",  # 动态加载运行时
-] }
+# VLM 引擎 (OpenAI 兼容 API)
+reqwest = { version = "0.12", features = ["json"] }  # HTTP 客户端
+base64 = "0.22"                                        # 图片编码
 
-# 文本嵌入
+# 文本嵌入 (fastembed)
 fastembed = "4"
-
-# Tokenizer (OCR 后处理)
-tokenizers = "0.19"
 ```
 
 ### 工具库
@@ -205,37 +208,106 @@ tauri-build = "2"
 
 ### 必需模型
 
-| 模型 | 用途 | 格式 | 大小 | 下载链接 |
+| 模型 | 用途 | 格式 | 后端 | 下载链接 |
 |------|-----|------|------|---------|
-| PP-OCRv4 Det | 文本检测 | ONNX INT8 | 4MB | [HuggingFace](https://huggingface.co/ppocrv4) |
-| PP-OCRv4 Rec | 文本识别 | ONNX INT8 | 10MB | [HuggingFace](https://huggingface.co/ppocrv4) |
-| all-MiniLM-L6-v2 | 文本嵌入 | ONNX | 80MB | fastembed 自动下载 |
+| Qwen3-VL-4B | 屏幕理解 + OCR | OpenAI 兼容 API | Ollama、vLLM、LM Studio | [Ollama Hub](https://ollama.com/library/qwen3-vl) |
+| all-MiniLM-L6-v2 | 文本嵌入 | ONNX | 本地推理 (fastembed 自动下载) | [HuggingFace](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) |
 
-### 可选模型
+### 可选模型 (高级用户)
 
-| 模型 | 用途 | 格式 | 大小 | 下载链接 |
+| 模型 | 用途 | 格式 | 后端 | 下载链接 |
 |------|-----|------|------|---------|
-| CLIP-ViT-B-32 | 视觉嵌入 | ONNX | 350MB | [HuggingFace](https://huggingface.co/openai/clip-vit-base-patch32) |
-| DeBERTa-v3-xsmall-NLI | 语义黑名单 | ONNX | 70MB | [HuggingFace](https://huggingface.co/cross-encoder) |
-| Qwen-2.5-7B-Instruct | 摘要生成 | GGUF Q4_K_M | 4.5GB | [HuggingFace](https://huggingface.co/Qwen) |
-| Llama-3.2-3B-Instruct | 摘要 (低配) | GGUF Q4_K_M | 2GB | [HuggingFace](https://huggingface.co/meta-llama) |
+| GPT-4V | 屏幕理解 (高精度) | OpenAI API | OpenAI | [OpenAI Docs](https://platform.openai.com/docs) |
+| Qwen3-VL-8B | 屏幕理解 (高精度) | OpenAI 兼容 API | vLLM、LM Studio | [HuggingFace](https://huggingface.co/Qwen) |
+| CLIP-ViT-B-32 | 视觉嵌入 | ONNX | 本地推理 | [HuggingFace](https://huggingface.co/openai/clip-vit-base-patch32) |
+| DeBERTa-v3-xsmall-NLI | 语义分类 | ONNX | 本地推理 | [HuggingFace](https://huggingface.co/cross-encoder) |
 
-### 模型目录结构
+### VLM 服务器配置
+
+**Ollama (推荐 - 最简单)**
+
+```bash
+# 安装
+brew install ollama  # macOS
+# 或下载：https://ollama.com/download
+
+# 运行
+ollama serve
+
+# 在另一个终端拉取模型
+ollama pull qwen3-vl:4b
+
+# 验证服务
+curl http://localhost:11434/v1/models
+```
+
+端点: `http://127.0.0.1:11434/v1`
+
+**vLLM (高性能)**
+
+```bash
+# 安装
+pip install vllm
+
+# 运行
+python -m vllm.entrypoints.openai.api_server \
+  --model Qwen/Qwen3-VL-4B-Instruct \
+  --trust-remote-code \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
+端点: `http://127.0.0.1:8000/v1`
+
+**LM Studio (GUI)**
 
 ```
-~/.engram/models/
-├── ocr/
-│   ├── ppocr_det_v4.onnx
-│   ├── ppocr_rec_v4.onnx
-│   └── ppocr_keys_v1.txt  # 字符字典
-├── embedding/
-│   └── (fastembed 自动管理)
-├── clip/
-│   └── clip-vit-b-32.onnx
-├── nli/
-│   └── deberta-v3-xsmall-nli.onnx
-└── llm/
-    └── qwen2.5-7b-instruct-q4_k_m.gguf
+1. 下载：https://lmstudio.ai
+2. 打开应用
+3. 在 "Models" 中搜索并下载 Qwen3-VL
+4. 点击 "Local Server" → "Start Server"
+5. 保持服务器运行
+```
+
+端点: `http://127.0.0.1:1234/v1`
+
+**OpenAI (云端)**
+
+```rust
+let config = VlmConfig::openai("sk-...", "gpt-4v");
+```
+
+端点: `https://api.openai.com/v1`
+
+### 模型目录结构（可选，仅用于参考）
+
+```
+~/.engram/
+├── models/
+│   ├── vlm/
+│   │   ├── qwen3-vl-4b-q4_k_m.gguf  # 2.5GB (低端设备)
+│   │   └── qwen3-vl-4b-q8_0.gguf    # 4.28GB (高精度)
+│   ├── embedding/
+│   │   └── (fastembed 自动管理)
+│   ├── clip/
+│   │   └── clip-vit-b-32.onnx       # 可选
+│   └── nli/
+│       └── deberta-v3-xsmall-nli.onnx  # 可选
+└── screenshots/
+    └── 2024/12/14/  # 截图目录
+```
+
+### 快速诊断
+
+```bash
+# 检查 Ollama 是否运行
+curl http://localhost:11434/v1/models
+
+# 检查 vLLM 是否运行
+curl http://localhost:8000/v1/models
+
+# 检查 LM Studio 是否运行
+curl http://localhost:1234/v1/models
 ```
 
 ---

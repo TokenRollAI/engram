@@ -1,401 +1,427 @@
 # AI 管道设计
 
-## 管道概览
+## 管道概览 (Phase 2.1 架构 - OpenAI 兼容 API)
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Engram AI Pipeline                               │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│              Engram AI Pipeline - VLM 架构（OpenAI 兼容 API）              │
+└──────────────────────────────────────────────────────────────────────────┘
 
-              输入                      处理                      输出
-         ┌──────────┐            ┌──────────────┐           ┌──────────┐
-   图像 ─►│          │───────────►│              │──────────►│ OCR 文本 │
-         │          │            │  PaddleOCR   │           └──────────┘
-         │          │            │  (检测+识别)  │
-         │  ONNX    │            └──────────────┘
-         │ Runtime  │            ┌──────────────┐           ┌──────────┐
-   文本 ─►│          │───────────►│   MiniLM     │──────────►│ 文本向量 │
-         │          │            │  (嵌入)       │           │ (384d)   │
-         │          │            └──────────────┘           └──────────┘
-         │          │            ┌──────────────┐           ┌──────────┐
-   图像 ─►│          │───────────►│    CLIP      │──────────►│ 视觉向量 │
-         │          │            │  (嵌入)       │           │ (512d)   │
-         └──────────┘            └──────────────┘           └──────────┘
-                                       │
-                                       │ (可选)
-                                       ▼
-                                ┌──────────────┐           ┌──────────┐
-                                │  NLI 分类    │──────────►│ 违规判定 │
-                                │  (DeBERTa)   │           └──────────┘
-                                └──────────────┘
+              输入                      处理                        输出
+         ┌──────────┐            ┌──────────────┐        ┌──────────────────┐
+   图像 ─►│  OpenAI  │───────────►│   Qwen3-VL   │───────►│ ScreenDescription│
+         │  兼容    │            │   (或其他)    │        │ {summary,        │
+         │  API     │            │   VLM 模型   │        │  text_content,   │
+         │          │            │ (通过HTTP)   │        │  detected_app,   │
+         │  后端:   │            └──────────────┘        │  activity_type,  │
+         │ Ollama   │                   │                 │  entities,       │
+         │ vLLM     │                   ▼                 │  confidence}     │
+         │ LM       │            ┌──────────────┐        └──────────────────┘
+         │ Studio   │───────────►│   MiniLM     │        ┌──────────────────┐
+   文本 ─►│ OpenAI   │            │   L6-v2      │───────►│  文本向量        │
+         │ Together │            │ (嵌入)       │        │  (384d)          │
+         │ AI 等    │            └──────────────┘        └──────────────────┘
+         │          │                   │
+         └──────────┘                   ▼
+                                   [向量搜索]
+                                        ▼
+                                ┌──────────────────┐
+                                │ 语义相关性排序    │
+                                └──────────────────┘
 ```
+
+## 核心流程变更 (PaddleOCR → VLM)
+
+### 移除的组件
+- **PaddleOCR** (ONNX): 多步骤的文本检测和识别流程
+- **ONNX Runtime** (`ort` crate): 不再需要本地推理框架
+- **ndarray** crate: 张量操作库
+- **llama-server sidecar**: 不再捆绑，改为配置外部 OpenAI 兼容 API
+
+### 新增的组件
+- **VLM 支持**: 通过 OpenAI 兼容 API 调用任何 VLM 模型
+  - 支持的后端: Ollama、vLLM、LM Studio、OpenAI、Together AI、OpenRouter 等
+  - 模型示例: Qwen3-VL-4B、GPT-4V、Claude Vision 等
+- **VlmEngine**: Rust 模块，管理 OpenAI 兼容 API 通信
+  - 文件: `src-tauri/src/ai/vlm.rs` (~400 行)
+  - 核心结构: `VlmEngine`, `VlmConfig`, `ScreenDescription`
+  - HTTP 客户端: reqwest 0.12
+  - 配置预设: `VlmConfig::ollama()`, `VlmConfig::openai()`, `VlmConfig::custom()`
 
 ## 模型清单
 
-| 模型 | 用途 | 格式 | 大小 | 输入 | 输出 |
-|------|-----|------|------|-----|------|
-| PP-OCRv4-det | 文本检测 | ONNX INT8 | 4MB | 图像 | 文本框坐标 |
-| PP-OCRv4-rec | 文本识别 | ONNX INT8 | 10MB | 裁剪图像 | 文本字符串 |
-| all-MiniLM-L6-v2 | 文本嵌入 | ONNX | 80MB | 文本 | 384d 向量 |
-| CLIP-ViT-B-32 | 视觉嵌入 | ONNX | 350MB | 图像 | 512d 向量 |
-| DeBERTa-v3-xsmall-NLI | 零样本分类 | ONNX | 70MB | 文本对 | 蕴含概率 |
-| Qwen-2.5-7B-Instruct | 摘要生成 | GGUF Q4_K_M | 4.5GB | 提示词 | 文本 |
+| 模型 | 用途 | 支持 | 后端示例 | 状态 |
+|------|-----|------|---------|------|
+| Qwen3-VL-4B | 屏幕理解 + OCR | OpenAI 兼容 API | Ollama、vLLM、LM Studio | ✅ 已集成 |
+| GPT-4V | 屏幕理解（高精度） | OpenAI API | OpenAI | ✅ 已集成 |
+| Claude Vision | 屏幕理解 | 未来支持 | Anthropic | 📋 计划 |
+| all-MiniLM-L6-v2 | 文本嵌入 | ONNX | 本地推理 | ✅ 已集成 |
+| CLIP-ViT-B-32 | 视觉嵌入 (可选) | ONNX | 本地推理 | 📋 可选 |
+| DeBERTa-v3-xsmall-NLI | 零样本分类 | ONNX | 本地推理 | 📋 待集成 |
 
-## OCR 管道详细设计
+## VLM 管道详细设计
 
-### 输入预处理
+### 数据流
+
+```
+截图 (JPEG)
+    ↓
+[Base64 编码]
+    ↓
+OpenAI 兼容 API POST /chat/completions
+    ├─ model: 配置的模型名称
+    ├─ messages: [{ role: "user", content: [{ type: "image_url", ... }] }]
+    ├─ max_tokens: 512 (可配置)
+    └─ temperature: 0.3 (可配置)
+    ↓
+[JSON 响应解析]
+    ↓
+ScreenDescription {
+    summary: String,           // 屏幕活动总结
+    text_content: Option<String>,  // 提取的所有文本
+    detected_app: Option<String>,  // 检测到的应用名称
+    activity_type: Option<String>, // 活动类别 (coding/browsing/etc)
+    entities: Vec<String>,     // 提取的实体 (项目名/文件/URL)
+    confidence: f32,           // 置信度 (0.0-1.0)
+}
+    ↓
+[MiniLM 嵌入]
+    ↓
+text_embedding (384d)
+    ↓
+[存储到 SQLite]
+```
+
+### VlmConfig 配置
 
 ```rust
-fn preprocess_for_ocr(image: &RgbaImage) -> DynamicImage {
-    // 1. 下采样到标准分辨率 (如果超过 1920x1080)
-    let resized = if image.width() > 1920 || image.height() > 1080 {
-        image.resize(1920, 1080, FilterType::Triangle)
-    } else {
-        image.clone()
-    };
+pub struct VlmConfig {
+    /// API 端点 (如 http://localhost:11434/v1)
+    pub endpoint: String,
+    /// 模型名称 (如 qwen3-vl:4b)
+    pub model: String,
+    /// API 密钥 (远程服务需要)
+    pub api_key: Option<String>,
+    /// 最大输出 tokens (默认 512)
+    pub max_tokens: u32,
+    /// 温度参数 (默认 0.3)
+    pub temperature: f32,
+}
 
-    // 2. 转换为 RGB (去除 Alpha)
-    let rgb = resized.to_rgb8();
+// 便利预设
+let ollama_config = VlmConfig::ollama("qwen3-vl:4b");
+let openai_config = VlmConfig::openai("sk-...", "gpt-4v");
+let custom_config = VlmConfig::custom("http://...", "model", Some("key"));
+```
 
-    // 3. 归一化到 [0, 1] (模型要求)
-    // 在 ONNX 输入时处理
+### VlmEngine 核心接口
 
-    rgb
+```rust
+pub struct VlmEngine {
+    config: VlmConfig,
+    client: reqwest::Client,
+    is_ready: bool,
+}
+
+impl VlmEngine {
+    // 创建新引擎
+    pub fn new(config: VlmConfig) -> Self;
+
+    // 初始化（验证连接）
+    pub async fn initialize(&mut self) -> Result<()>;
+
+    // 自动检测可用的本地服务
+    pub async fn auto_detect() -> Result<Self>;
+
+    // 检查是否就绪
+    pub fn is_running(&self) -> bool;
+
+    // 分析屏幕截图
+    pub async fn analyze_screen(&self, image: &RgbImage) -> Result<ScreenDescription>;
+
+    // 获取用于嵌入的文本
+    pub fn get_text_for_embedding(desc: &ScreenDescription) -> String;
+
+    // 获取后端名称
+    pub fn backend_name(&self) -> String;
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ScreenDescription {
+    pub summary: String,
+    pub text_content: Option<String>,
+    pub detected_app: Option<String>,
+    pub activity_type: Option<String>,
+    pub entities: Vec<String>,
+    pub confidence: f32,
 }
 ```
 
-### 检测阶段
+### 支持的后端
 
-```
-输入: RGB 图像 (H x W x 3)
-      ↓
-转换: NCHW 格式 (1 x 3 x H x W), float32, 归一化
-      ↓
-推理: PP-OCRv4-det.onnx
-      ↓
-输出: 概率图 (H x W)
-      ↓
-后处理: DB 后处理算法
-      - 二值化 (阈值 0.3)
-      - 膨胀操作
-      - 轮廓检测
-      - 最小外接矩形
-      ↓
-结果: Vec<BoundingBox>
-```
+| 后端 | 端点示例 | 安装方式 | 模型支持 |
+|------|---------|---------|---------|
+| **Ollama** | http://localhost:11434/v1 | [ollama.com](https://ollama.com/download) | Qwen3-VL、Llama、Mistral 等 |
+| **vLLM** | http://localhost:8000/v1 | `pip install vllm` | 所有 HuggingFace 模型 |
+| **LM Studio** | http://localhost:1234/v1 | [lmstudio.ai](https://lmstudio.ai/) | 本地 GGUF 模型 |
+| **OpenAI** | https://api.openai.com/v1 | API Key | GPT-4V、GPT-4o |
+| **Together AI** | https://api.together.xyz/v1 | API Key | Qwen、Llama、Mistral 等 |
+| **OpenRouter** | https://openrouter.ai/api/v1 | API Key | 300+ 模型聚合 |
 
-### 识别阶段
-
-```
-对每个检测到的文本框:
-      ↓
-输入: 裁剪并旋转的文本行图像
-      ↓
-调整: 固定高度 48px，宽度按比例
-      ↓
-推理: PP-OCRv4-rec.onnx
-      ↓
-输出: 字符概率序列
-      ↓
-解码: CTC 解码 (贪心或 Beam Search)
-      ↓
-结果: (text: String, confidence: f32)
-```
-
-### 执行提供者配置
+### 快速开始示例
 
 ```rust
-use ort::{Environment, SessionBuilder, ExecutionProvider};
+use engram_lib::ai::vlm::{VlmEngine, VlmConfig};
 
-fn create_ocr_session(model_path: &str) -> Result<Session> {
-    let env = Environment::builder()
-        .with_name("engram_ocr")
-        .build()?;
+// 方式 1: 自动检测本地服务
+let mut engine = VlmEngine::auto_detect().await?;
+engine.initialize().await?;
 
-    let mut builder = SessionBuilder::new(&env)?;
+// 方式 2: 指定 Ollama 配置
+let mut engine = VlmEngine::new(VlmConfig::ollama("qwen3-vl:4b"));
+engine.initialize().await?;
 
-    // 按优先级尝试不同的执行提供者
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder.with_execution_providers([
-            ExecutionProvider::CoreML(Default::default()),
-            ExecutionProvider::CPU(Default::default()),
-        ])?;
-    }
+// 方式 3: 使用 OpenAI
+let mut engine = VlmEngine::new(
+    VlmConfig::openai("sk-...", "gpt-4v")
+);
+engine.initialize().await?;
 
-    #[cfg(target_os = "windows")]
-    {
-        builder = builder.with_execution_providers([
-            ExecutionProvider::DirectML(Default::default()),
-            ExecutionProvider::OpenVINO(Default::default()),
-            ExecutionProvider::CPU(Default::default()),
-        ])?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        builder = builder.with_execution_providers([
-            ExecutionProvider::CUDA(Default::default()),
-            ExecutionProvider::CPU(Default::default()),
-        ])?;
-    }
-
-    builder.commit_from_file(model_path)
-}
+// 分析截图
+let desc = engine.analyze_screen(&image).await?;
+println!("{}", desc.summary);
+println!("App: {:?}", desc.detected_app);
+println!("Confidence: {}", desc.confidence);
 ```
+
+## 新增依赖
+
+```toml
+[dependencies]
+# HTTP 客户端
+reqwest = { version = "0.12", features = ["json"] }
+
+# 图片编码 (Base64)
+base64 = "0.22"
+```
+
+## 移除的依赖
+
+```toml
+# 已移除（不再需要）
+# ort = "2.0.0-rc.9"        # ONNX Runtime
+# ndarray = "0.16"          # 张量操作
+# tokenizers = "0.19"       # OCR 后处理
+```
+
+## 架构优势
+
+### 1. 灵活性
+- 支持任何 OpenAI 兼容 API
+- 无需捆绑推理服务器
+- 用户可选择本地或云端服务
+
+### 2. 简化管道
+**之前** (PaddleOCR → 嵌入 → 搜索):
+```
+截图 → PP-OCRv4-det (300ms) → 文本框 → PP-OCRv4-rec (200ms) → 文本 → MiniLM (100ms) → 向量
+```
+
+**现在** (VLM → 嵌入 → 搜索):
+```
+截图 → VLM (2-10s) → 结构化描述 + 文本 → MiniLM (100ms) → 向量
+```
+
+### 3. 更智能
+- VLM 不仅提取文本，还能理解上下文
+- 自动检测应用和活动类型
+- 提取语义相关的实体和置信度
+
+### 4. 开放生态
+- 支持本地开源模型（成本低、隐私好）
+- 支持云端模型（精度高、响应快）
+- 自动检测本地服务，开箱即用
+
+## 当前实现状态 (Phase 2.1 - 架构升级完成)
+
+- **文件**: `src-tauri/src/ai/vlm.rs` (~400 行)
+- **核心结构**:
+  - `VlmEngine` - OpenAI 兼容 API 引擎
+  - `VlmConfig` - 灵活的配置系统
+  - `ScreenDescription` - 结构化屏幕描述
+
+- **关键方法**:
+  - `new(config)` - 初始化 VLM 引擎
+  - `auto_detect()` - 自动检测可用服务
+  - `initialize()` - 验证连接
+  - `analyze_screen(image)` - 执行屏幕理解
+  - `get_text_for_embedding()` - 获取嵌入文本
+
+- **支持特性**:
+  - 多后端支持（本地 + 云端）
+  - API 密钥管理
+  - 图片缩放优化
+  - JSON 响应自动解析
+  - 置信度评分
+
+---
 
 ## 嵌入管道设计
 
-### 文本嵌入
+### 双后端架构
+
+嵌入模块支持两种后端，优先使用 OpenAI 兼容 API，无配置或连接失败时回退到本地模型：
+
+```
+配置检查
+    ↓
+┌─────────────────────────────────────────────┐
+│ endpoint 已配置?                              │
+│   ├─ Yes → 尝试 OpenAI 兼容 API              │
+│   │         ├─ 成功 → 使用 API 嵌入          │
+│   │         └─ 失败 → 回退到本地             │
+│   └─ No  → 使用本地 fastembed               │
+└─────────────────────────────────────────────┘
+```
+
+### EmbeddingConfig 配置
 
 ```rust
-use fastembed::{TextEmbedding, InitOptions, EmbeddingModel};
+pub struct EmbeddingConfig {
+    /// API 端点（None = 使用本地）
+    pub endpoint: Option<String>,
+    /// 模型名称
+    pub model: String,
+    /// API 密钥
+    pub api_key: Option<String>,
+}
 
-struct TextEmbedder {
-    model: TextEmbedding,
+// 预设配置
+let local = EmbeddingConfig::local();                    // 本地 MiniLM
+let openai = EmbeddingConfig::openai("sk-...");          // OpenAI API
+let ollama = EmbeddingConfig::ollama("nomic-embed-text"); // Ollama
+let custom = EmbeddingConfig::custom(endpoint, model, api_key);
+```
+
+### TextEmbedder 核心接口
+
+```rust
+pub struct TextEmbedder {
+    config: EmbeddingConfig,
+    backend: EmbeddingBackend,  // OpenAiCompatible | Local
+    client: reqwest::Client,
+    local_model: Option<fastembed::TextEmbedding>,
 }
 
 impl TextEmbedder {
-    fn new() -> Result<Self> {
-        let model = TextEmbedding::try_new(InitOptions {
-            model_name: EmbeddingModel::AllMiniLML6V2,
-            show_download_progress: true,
-            ..Default::default()
-        })?;
-        Ok(Self { model })
-    }
+    // 创建嵌入器
+    pub fn new() -> Self;                              // 默认本地
+    pub fn with_config(config: EmbeddingConfig) -> Self;
 
-    fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        // 截断过长文本 (MiniLM 最大 256 tokens)
-        let truncated = truncate_text(text, 256);
+    // 初始化（API 失败自动回退到本地）
+    pub async fn initialize(&mut self) -> Result<()>;
 
-        let embeddings = self.model.embed(vec![truncated], None)?;
-        Ok(embeddings.into_iter().next().unwrap())
-    }
+    // 嵌入文本
+    pub async fn embed(&self, text: &str) -> Result<Vec<f32>>;
+    pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 
-    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        self.model.embed(texts.to_vec(), None)
-    }
+    // 同步版本（仅本地模式）
+    pub fn embed_sync(&self, text: &str) -> Result<Vec<f32>>;
+
+    // 辅助方法
+    pub fn backend_name(&self) -> String;
+    pub fn embedding_dim(&self) -> usize;
 }
 ```
 
-### 视觉嵌入
+### 支持的嵌入模型
+
+| 后端 | 模型 | 维度 | 特点 |
+|------|-----|------|------|
+| **本地** | all-MiniLM-L6-v2 | 384 | 离线可用，快速 |
+| **OpenAI** | text-embedding-3-small | 1536 | 高质量，需 API Key |
+| **OpenAI** | text-embedding-3-large | 3072 | 最高质量 |
+| **Ollama** | nomic-embed-text | 768 | 本地服务，免费 |
+| **Ollama** | mxbai-embed-large | 1024 | 本地高质量 |
+
+### 快速开始示例
 
 ```rust
-struct ImageEmbedder {
-    session: Session,
-    processor: ClipProcessor,
-}
+use engram_lib::ai::embedding::{TextEmbedder, EmbeddingConfig};
 
-impl ImageEmbedder {
-    fn embed(&self, image: &RgbaImage) -> Result<Vec<f32>> {
-        // 1. CLIP 预处理
-        //    - Resize 到 224x224
-        //    - Center crop
-        //    - Normalize: mean=[0.48145466, 0.4578275, 0.40821073]
-        //                 std=[0.26862954, 0.26130258, 0.27577711]
-        let input = self.processor.preprocess(image)?;
+// 方式 1: 本地模式（默认）
+let mut embedder = TextEmbedder::new();
+embedder.initialize().await?;
 
-        // 2. 推理
-        let outputs = self.session.run(ort::inputs![input]?)?;
+// 方式 2: OpenAI API
+let mut embedder = TextEmbedder::with_config(
+    EmbeddingConfig::openai("sk-...")
+);
+embedder.initialize().await?;  // 失败会自动回退到本地
 
-        // 3. L2 归一化
-        let embedding = outputs[0].try_extract::<f32>()?;
-        Ok(l2_normalize(embedding))
-    }
-}
+// 方式 3: Ollama
+let mut embedder = TextEmbedder::with_config(
+    EmbeddingConfig::ollama("nomic-embed-text")
+);
+embedder.initialize().await?;
+
+// 嵌入文本
+let vec = embedder.embed("hello world").await?;
+let vecs = embedder.embed_batch(&texts).await?;
+
+println!("Backend: {}", embedder.backend_name());
+println!("Dimension: {}", embedder.embedding_dim());
 ```
 
-## 语义黑名单 (零样本分类)
+### 当前实现状态 (Phase 2 M2.2 完成)
 
-### 工作原理
+- **文件**: `src-tauri/src/ai/embedding.rs` (~500 行)
+- **核心结构**:
+  - `TextEmbedder` - 双后端文本嵌入器
+  - `EmbeddingConfig` - 灵活配置系统
+  - `EmbeddingQueue` - 批处理队列
 
-零样本分类利用自然语言推理 (NLI) 模型，判断输入文本是否"蕴含"某个标签描述。
+- **关键特性**:
+  - OpenAI 兼容 API 支持
+  - 自动回退到本地模型
+  - 异步和同步 API
+  - 批量嵌入优化
 
-```
-输入:
-  premise = "账户余额: ¥12,345.67 转账记录..."
-  hypothesis = "这段内容涉及银行账户信息"
+---
 
-NLI 模型输出:
-  entailment: 0.95   ← 高置信度表示匹配
-  neutral: 0.03
-  contradiction: 0.02
-```
+## 向量搜索与混合搜索
 
-### 实现
+### 向量存储设计
 
-```rust
-struct SemanticFilter {
-    session: Session,
-    tokenizer: Tokenizer,
-    blacklist_descriptions: Vec<String>,
-    threshold: f32,
-}
+```sql
+-- traces 表新增字段 (M2.2.2 完成)
+ALTER TABLE traces ADD COLUMN embedding BLOB;  -- 向量以 BLOB 形式存储
 
-impl SemanticFilter {
-    fn should_block(&self, text: &str) -> bool {
-        for description in &self.blacklist_descriptions {
-            // 构建 NLI 输入对
-            let premise = text;
-            let hypothesis = description;
-
-            // Tokenize
-            let encoding = self.tokenizer.encode(
-                (premise, hypothesis),
-                true
-            ).unwrap();
-
-            // 推理
-            let scores = self.run_nli(&encoding);
-
-            // 检查蕴含分数
-            if scores.entailment > self.threshold {
-                return true;  // 匹配黑名单
-            }
-        }
-        false
-    }
-}
+-- 向量格式: 使用 bincode 序列化为二进制
+-- Vec<f32> -> bincode 编码 -> BLOB
 ```
 
-### 默认语义黑名单
+### 向量搜索实现 (M2.2.2)
 
-```toml
-# settings.toml
-[semantic_blacklist]
-descriptions = [
-    "涉及个人隐私的聊天内容",
-    "银行账户或信用卡信息",
-    "密码或身份认证凭据",
-    "医疗健康敏感信息",
-]
-threshold = 0.85
-```
+参见 `llmdoc/architecture/data-flow.md` 中的向量搜索部分。
 
-## LLM 摘要生成
+### 混合搜索 - RRF 融合 (M2.2.3 完成)
 
-### Sidecar 架构
+结合全文搜索 (FTS5) 和向量搜索，使用 RRF (Reciprocal Rank Fusion) 融合算法进行结果排序。
 
-```
-Engram 主进程
-     │
-     │ 启动子进程
-     ▼
-┌────────────────────────────────────────────┐
-│  llama-server                              │
-│  --model /path/to/qwen-2.5-7b-q4_k_m.gguf │
-│  --host 127.0.0.1                          │
-│  --port {random}                           │
-│  --ctx-size 4096                           │
-│  --n-gpu-layers 35  (如果有 GPU)           │
-└────────────────────────────────────────────┘
-     ▲
-     │ HTTP POST /completion
-     │
-Engram 摘要模块
-```
-
-### Prompt 模板
-
-```
-<|im_start|>system
-你是一个专业的数字活动分析师。根据用户的屏幕活动日志生成结构化摘要。
-输出必须是有效的 JSON 格式。
-<|im_end|>
-<|im_start|>user
-以下是过去 15 分钟的屏幕活动记录：
-
-[09:00:15] Visual Studio Code - main.rs
-OCR: impl ScreenCapture for Windows { ... }
-
-[09:02:30] Chrome - Rust scap crate documentation
-OCR: scap is a cross-platform screen capture library...
-
-[09:05:45] Terminal - cargo build
-OCR: Compiling engram v0.1.0 ...
-
-请生成 JSON 格式的摘要，包含以下字段：
-- summary: 200字以内的活动总结
-- topics: 主题标签数组
-- entities: 提取的实体 [{name, type}]
-- links: 出现的 URL 数组
-<|im_end|>
-<|im_start|>assistant
-```
-
-### 响应解析
-
-```rust
-#[derive(Deserialize)]
-struct SummaryResponse {
-    summary: String,
-    topics: Vec<String>,
-    entities: Vec<Entity>,
-    links: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct Entity {
-    name: String,
-    #[serde(rename = "type")]
-    entity_type: String,
-}
-
-async fn generate_summary(
-    client: &HttpClient,
-    traces: &[Trace],
-) -> Result<SummaryResponse> {
-    let prompt = build_prompt(traces);
-
-    let response = client.post(&format!("{}/completion", llama_url))
-        .json(&json!({
-            "prompt": prompt,
-            "max_tokens": 1024,
-            "temperature": 0.3,
-            "grammar": SUMMARY_JSON_GRAMMAR,  // GBNF 语法约束
-        }))
-        .send()
-        .await?;
-
-    let completion: CompletionResponse = response.json().await?;
-    let summary: SummaryResponse = serde_json::from_str(&completion.content)?;
-
-    Ok(summary)
-}
-```
-
-### GBNF 语法约束
-
-```gbnf
-root ::= "{" ws summary-kv "," ws topics-kv "," ws entities-kv "," ws links-kv ws "}"
-
-summary-kv ::= "\"summary\"" ws ":" ws string
-topics-kv ::= "\"topics\"" ws ":" ws "[" ws (string ("," ws string)*)? ws "]"
-entities-kv ::= "\"entities\"" ws ":" ws "[" ws (entity ("," ws entity)*)? ws "]"
-links-kv ::= "\"links\"" ws ":" ws "[" ws (string ("," ws string)*)? ws "]"
-
-entity ::= "{" ws "\"name\"" ws ":" ws string "," ws "\"type\"" ws ":" ws string ws "}"
-
-string ::= "\"" ([^"\\] | "\\" .)* "\""
-ws ::= [ \t\n]*
-```
+---
 
 ## 性能优化策略
 
-### 1. 模型预热
+### 1. 自动检测 + 默认配置
 
 ```rust
-impl AiPipeline {
-    async fn warmup(&self) {
-        // OCR 预热 (第一次推理较慢)
-        let dummy_image = RgbaImage::new(224, 224);
-        let _ = self.ocr.process(&dummy_image);
-
-        // 嵌入模型预热
-        let _ = self.text_embedder.embed("warmup");
-    }
-}
+// 自动检测本地服务，开箱即用
+let mut engine = VlmEngine::auto_detect().await.expect(
+    "No local VLM service detected.\n\
+     Please install Ollama: https://ollama.com/download"
+);
+engine.initialize().await?;
 ```
 
 ### 2. 批处理
@@ -424,10 +450,33 @@ impl EmbeddingQueue {
 }
 ```
 
-### 3. 模型量化配置
+### 3. 硬件适配
 
-| 硬件配置 | OCR 精度 | 嵌入精度 | LLM 量化 |
+| 硬件配置 | VLM 选择 | 嵌入精度 | 推荐用途 |
 |---------|---------|---------|---------|
-| 高端 (16GB+, GPU) | FP16 | FP32 | Q8_0 |
-| 中端 (8-16GB) | INT8 | FP32 | Q4_K_M |
-| 低端 (<8GB) | INT8 | FP16 | Q4_0 或禁用 |
+| 高端 (16GB+, GPU) | GPT-4V 或 QwenVL-8B | FP32 | 高精度、实时处理 |
+| 中端 (8-16GB) | Qwen3-VL-4B (Ollama) | FP32 | 平衡性能和质量 |
+| 低端 (<8GB) | Qwen3-VL-4B Q2_K 量化 | FP16 | 有限资源下可用 |
+
+### 4. 缓存策略
+
+```rust
+// 图片哈希缓存，避免重复分析
+struct VlmCache {
+    lru: LRUCache<ImageHash, ScreenDescription>,
+    max_size: usize,
+}
+
+impl VlmCache {
+    fn get_or_analyze(&mut self, image: &RgbImage, engine: &VlmEngine) -> Result<ScreenDescription> {
+        let hash = hash_image(image);
+        if let Some(cached) = self.lru.get(&hash) {
+            return Ok(cached.clone());
+        }
+
+        let desc = engine.analyze_screen(image).await?;
+        self.lru.insert(hash, desc.clone());
+        Ok(desc)
+    }
+}
+```

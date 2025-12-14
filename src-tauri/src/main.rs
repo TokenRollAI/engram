@@ -43,6 +43,8 @@ fn main() {
             commands::get_settings,
             commands::update_settings,
             commands::get_storage_stats,
+            commands::initialize_ai,
+            commands::get_ai_status,
         ])
         .build(tauri::generate_context!())
         .expect("Failed to build Tauri application")
