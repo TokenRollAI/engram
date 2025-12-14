@@ -641,7 +641,7 @@ pub async fn chat_with_memory(
     // 获取时间范围内的 traces
     let traces = state
         .db
-        .get_traces(start_time, end_time, request.app_filter.as_ref(), Some(50))
+        .get_traces_filtered(start_time, end_time, request.app_filter.as_ref(), 50)
         .map_err(|e| e.to_string())?;
 
     if traces.is_empty() {

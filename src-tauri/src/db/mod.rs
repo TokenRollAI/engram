@@ -189,6 +189,122 @@ impl Database {
         Ok(result)
     }
 
+    /// 按时间范围和应用过滤查询痕迹
+    pub fn get_traces_filtered(
+        &self,
+        start_time: i64,
+        end_time: i64,
+        app_filter: Option<&Vec<String>>,
+        limit: u32,
+    ) -> Result<Vec<Trace>> {
+        let conn = self.conn.lock().unwrap();
+
+        // 构建动态 SQL
+        let (sql, has_filter) = if let Some(apps) = app_filter {
+            if apps.is_empty() {
+                (
+                    r#"
+                    SELECT id, timestamp, image_path, app_name, window_title,
+                           is_fullscreen, window_x, window_y, window_w, window_h,
+                           is_idle, ocr_text, created_at
+                    FROM traces
+                    WHERE timestamp BETWEEN ?1 AND ?2
+                    ORDER BY timestamp DESC
+                    LIMIT ?3
+                    "#.to_string(),
+                    false,
+                )
+            } else {
+                // 构建 IN 子句的占位符
+                let placeholders: Vec<String> = (0..apps.len()).map(|i| format!("?{}", i + 4)).collect();
+                (
+                    format!(
+                        r#"
+                        SELECT id, timestamp, image_path, app_name, window_title,
+                               is_fullscreen, window_x, window_y, window_w, window_h,
+                               is_idle, ocr_text, created_at
+                        FROM traces
+                        WHERE timestamp BETWEEN ?1 AND ?2
+                          AND app_name IN ({})
+                        ORDER BY timestamp DESC
+                        LIMIT ?3
+                        "#,
+                        placeholders.join(", ")
+                    ),
+                    true,
+                )
+            }
+        } else {
+            (
+                r#"
+                SELECT id, timestamp, image_path, app_name, window_title,
+                       is_fullscreen, window_x, window_y, window_w, window_h,
+                       is_idle, ocr_text, created_at
+                FROM traces
+                WHERE timestamp BETWEEN ?1 AND ?2
+                ORDER BY timestamp DESC
+                LIMIT ?3
+                "#.to_string(),
+                false,
+            )
+        };
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        // 构建参数
+        let traces = if has_filter {
+            let apps = app_filter.unwrap();
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                Box::new(start_time),
+                Box::new(end_time),
+                Box::new(limit),
+            ];
+            for app in apps {
+                params.push(Box::new(app.clone()));
+            }
+            let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            stmt.query_map(params_refs.as_slice(), |row| {
+                Ok(Trace {
+                    id: row.get(0)?,
+                    timestamp: row.get(1)?,
+                    image_path: row.get(2)?,
+                    app_name: row.get(3)?,
+                    window_title: row.get(4)?,
+                    is_fullscreen: row.get(5)?,
+                    window_x: row.get(6)?,
+                    window_y: row.get(7)?,
+                    window_w: row.get(8)?,
+                    window_h: row.get(9)?,
+                    is_idle: row.get(10)?,
+                    ocr_text: row.get(11)?,
+                    created_at: row.get(12)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map(rusqlite::params![start_time, end_time, limit], |row| {
+                Ok(Trace {
+                    id: row.get(0)?,
+                    timestamp: row.get(1)?,
+                    image_path: row.get(2)?,
+                    app_name: row.get(3)?,
+                    window_title: row.get(4)?,
+                    is_fullscreen: row.get(5)?,
+                    window_x: row.get(6)?,
+                    window_y: row.get(7)?,
+                    window_w: row.get(8)?,
+                    window_h: row.get(9)?,
+                    is_idle: row.get(10)?,
+                    ocr_text: row.get(11)?,
+                    created_at: row.get(12)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        Ok(traces)
+    }
+
     /// 全文搜索
     pub fn search_text(&self, query: &str, limit: u32) -> Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
