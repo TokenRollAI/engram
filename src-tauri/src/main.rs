@@ -41,6 +41,7 @@ fn main() {
             commands::toggle_capture,
             commands::capture_now,
             commands::get_traces,
+            commands::get_image_path,
             commands::search_traces,
             commands::get_settings,
             commands::update_settings,

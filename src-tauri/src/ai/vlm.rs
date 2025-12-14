@@ -237,23 +237,61 @@ impl VlmEngine {
         });
 
         let url = format!("{}/chat/completions", self.config.endpoint);
+
+        // 记录请求日志
+        info!(
+            "VLM API Request: endpoint={}, model={}, max_tokens={}, temperature={}, image_size={}KB",
+            self.config.endpoint,
+            self.config.model,
+            self.config.max_tokens,
+            self.config.temperature,
+            image_base64.len() / 1024
+        );
+        debug!("VLM API URL: {}", url);
+
+        let start_time = std::time::Instant::now();
+
         let mut req = self.client.post(&url).json(&request);
 
         if let Some(ref key) = self.config.api_key {
             req = req.header("Authorization", format!("Bearer {}", key));
+            debug!("VLM API: Using API key ({}...)", &key[..key.len().min(8)]);
         }
 
         let response = req.send().await?;
+        let status = response.status();
+        let elapsed = start_time.elapsed();
 
-        if !response.status().is_success() {
+        // 记录响应日志
+        info!(
+            "VLM API Response: status={}, elapsed={:.2}s",
+            status,
+            elapsed.as_secs_f64()
+        );
+
+        if !status.is_success() {
             let error = response.text().await.unwrap_or_default();
-            return Err(anyhow!("API error: {}", error));
+            warn!("VLM API Error: status={}, body={}", status, error);
+            return Err(anyhow!("API error {}: {}", status, error));
         }
 
         let result: serde_json::Value = response.json().await?;
+
+        // 记录使用情况（如果有）
+        if let Some(usage) = result.get("usage") {
+            info!(
+                "VLM API Usage: prompt_tokens={}, completion_tokens={}, total_tokens={}",
+                usage.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                usage.get("completion_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                usage.get("total_tokens").and_then(|v| v.as_i64()).unwrap_or(0)
+            );
+        }
+
         let content = result["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or("");
+
+        debug!("VLM API Response content length: {} chars", content.len());
 
         Self::parse_response(content)
     }

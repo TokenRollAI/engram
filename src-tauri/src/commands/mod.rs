@@ -70,6 +70,16 @@ pub async fn get_traces(
         .map_err(|e| e.to_string())
 }
 
+/// 获取图片完整路径
+#[tauri::command]
+pub async fn get_image_path(
+    state: State<'_, AppState>,
+    relative_path: String,
+) -> Result<String, String> {
+    let full_path = state.db.get_full_path(&relative_path);
+    Ok(full_path.to_string_lossy().to_string())
+}
+
 /// 搜索痕迹
 #[tauri::command]
 pub async fn search_traces(
@@ -321,7 +331,7 @@ pub async fn update_ai_config(
 }
 
 /// 从数据库加载 VLM 配置
-fn load_vlm_config_from_db(db: &crate::db::Database) -> VlmConfig {
+pub fn load_vlm_config_from_db(db: &crate::db::Database) -> VlmConfig {
     let mut config = VlmConfig::default();
 
     if let Ok(Some(v)) = db.get_setting("vlm_endpoint") {
@@ -350,7 +360,7 @@ fn load_vlm_config_from_db(db: &crate::db::Database) -> VlmConfig {
 }
 
 /// 从数据库加载 Embedding 配置
-fn load_embedding_config_from_db(db: &crate::db::Database) -> EmbeddingConfig {
+pub fn load_embedding_config_from_db(db: &crate::db::Database) -> EmbeddingConfig {
     let mut config = EmbeddingConfig::default();
 
     if let Ok(Some(v)) = db.get_setting("embedding_endpoint") {
