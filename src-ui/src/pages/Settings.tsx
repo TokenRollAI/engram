@@ -33,9 +33,17 @@ interface EmbeddingConfig {
   api_key: string | null;
 }
 
+interface VlmTaskConfig {
+  interval_ms: number;
+  batch_size: number;
+  concurrency: number;
+  enabled: boolean;
+}
+
 interface AiConfig {
   vlm: VlmConfig;
   embedding: EmbeddingConfig;
+  vlm_task: VlmTaskConfig;
 }
 
 interface AiStatus {
@@ -145,6 +153,14 @@ const Settings: Component = () => {
     const config = aiConfig();
     if (config) {
       setAiConfig({ ...config, embedding: { ...config.embedding, [key]: value } });
+    }
+  };
+
+  // 更新 VLM 任务配置
+  const updateVlmTaskConfig = <K extends keyof VlmTaskConfig>(key: K, value: VlmTaskConfig[K]) => {
+    const config = aiConfig();
+    if (config) {
+      setAiConfig({ ...config, vlm_task: { ...config.vlm_task, [key]: value } });
     }
   };
 
@@ -578,6 +594,81 @@ const Settings: Component = () => {
                 <p class="text-xs text-foreground-secondary">
                   本地模式使用 all-MiniLM-L6-v2 模型 (384维)，无需联网。
                   如配置 API 但连接失败，将自动回退到本地模型。
+                </p>
+              </div>
+            </Show>
+          </section>
+
+          {/* VLM 任务配置 */}
+          <section class="bg-background-card rounded-lg p-6">
+            <h3 class="text-lg font-semibold mb-4 flex items-center">
+              <span class="mr-2">⚡</span>
+              后台分析任务
+            </h3>
+
+            <Show when={aiConfig()}>
+              <div class="space-y-4">
+                <div class="grid grid-cols-3 gap-4">
+                  <div>
+                    <label class="block text-sm text-foreground-secondary mb-1">并发数</label>
+                    <input
+                      type="number"
+                      value={aiConfig()!.vlm_task.concurrency}
+                      onInput={(e) => updateVlmTaskConfig("concurrency", parseInt(e.currentTarget.value) || 3)}
+                      min={1}
+                      max={10}
+                      class="w-full px-3 py-2 bg-background border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-accent"
+                    />
+                    <p class="text-xs text-foreground-secondary mt-1">同时处理的请求数</p>
+                  </div>
+                  <div>
+                    <label class="block text-sm text-foreground-secondary mb-1">批处理大小</label>
+                    <input
+                      type="number"
+                      value={aiConfig()!.vlm_task.batch_size}
+                      onInput={(e) => updateVlmTaskConfig("batch_size", parseInt(e.currentTarget.value) || 10)}
+                      min={1}
+                      max={50}
+                      class="w-full px-3 py-2 bg-background border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-accent"
+                    />
+                    <p class="text-xs text-foreground-secondary mt-1">每批处理的截图数</p>
+                  </div>
+                  <div>
+                    <label class="block text-sm text-foreground-secondary mb-1">检查间隔 (秒)</label>
+                    <input
+                      type="number"
+                      value={Math.round(aiConfig()!.vlm_task.interval_ms / 1000)}
+                      onInput={(e) => updateVlmTaskConfig("interval_ms", (parseInt(e.currentTarget.value) || 5) * 1000)}
+                      min={1}
+                      max={60}
+                      class="w-full px-3 py-2 bg-background border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-accent"
+                    />
+                    <p class="text-xs text-foreground-secondary mt-1">检查新截图的频率</p>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between p-3 bg-background rounded">
+                  <div>
+                    <p class="font-medium">启用后台分析</p>
+                    <p class="text-xs text-foreground-secondary">自动分析新截图并生成嵌入向量</p>
+                  </div>
+                  <button
+                    onClick={() => updateVlmTaskConfig("enabled", !aiConfig()!.vlm_task.enabled)}
+                    class={`relative w-12 h-6 rounded-full transition-colors ${
+                      aiConfig()!.vlm_task.enabled ? "bg-accent" : "bg-gray-600"
+                    }`}
+                  >
+                    <span
+                      class={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${
+                        aiConfig()!.vlm_task.enabled ? "translate-x-7" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                <p class="text-xs text-foreground-secondary">
+                  提示：并发数越高处理速度越快，但会增加 API 调用压力。
+                  建议本地模型设为 1-2，云端 API 设为 3-5。
                 </p>
               </div>
             </Show>

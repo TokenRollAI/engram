@@ -3,7 +3,7 @@
 //! 提供前端调用的 API 接口。
 
 use crate::ai::{EmbeddingConfig, VlmConfig};
-use crate::daemon::DaemonStatus;
+use crate::daemon::{DaemonStatus, VlmTaskConfig};
 use crate::db::models::{Entity, SearchResult, Settings, StorageStats, Summary, Trace};
 use crate::AppState;
 use tauri::State;
@@ -286,6 +286,7 @@ pub struct AiStatus {
 pub struct AiConfig {
     pub vlm: VlmConfig,
     pub embedding: EmbeddingConfig,
+    pub vlm_task: VlmTaskConfig,
 }
 
 /// 获取 AI 配置
@@ -296,10 +297,12 @@ pub async fn get_ai_config(state: State<'_, AppState>) -> Result<AiConfig, Strin
     // 从数据库读取配置
     let vlm_config = load_vlm_config_from_db(&state.db);
     let embedding_config = load_embedding_config_from_db(&state.db);
+    let vlm_task_config = load_vlm_task_config_from_db(&state.db);
 
     Ok(AiConfig {
         vlm: vlm_config,
         embedding: embedding_config,
+        vlm_task: vlm_task_config,
     })
 }
 
@@ -309,8 +312,8 @@ pub async fn update_ai_config(
     state: State<'_, AppState>,
     config: AiConfig,
 ) -> Result<(), String> {
-    info!("update_ai_config: vlm.endpoint={}, embedding.endpoint={:?}",
-          config.vlm.endpoint, config.embedding.endpoint);
+    info!("update_ai_config: vlm.endpoint={}, embedding.endpoint={:?}, vlm_task.concurrency={}",
+          config.vlm.endpoint, config.embedding.endpoint, config.vlm_task.concurrency);
 
     // 保存 VLM 配置到数据库
     state.db.set_setting("vlm_endpoint", &config.vlm.endpoint).map_err(|e| e.to_string())?;
@@ -323,6 +326,12 @@ pub async fn update_ai_config(
     state.db.set_setting("embedding_endpoint", config.embedding.endpoint.as_deref().unwrap_or("")).map_err(|e| e.to_string())?;
     state.db.set_setting("embedding_model", &config.embedding.model).map_err(|e| e.to_string())?;
     state.db.set_setting("embedding_api_key", config.embedding.api_key.as_deref().unwrap_or("")).map_err(|e| e.to_string())?;
+
+    // 保存 VLM 任务配置到数据库
+    state.db.set_setting("vlm_task_interval_ms", &config.vlm_task.interval_ms.to_string()).map_err(|e| e.to_string())?;
+    state.db.set_setting("vlm_task_batch_size", &config.vlm_task.batch_size.to_string()).map_err(|e| e.to_string())?;
+    state.db.set_setting("vlm_task_concurrency", &config.vlm_task.concurrency.to_string()).map_err(|e| e.to_string())?;
+    state.db.set_setting("vlm_task_enabled", &config.vlm_task.enabled.to_string()).map_err(|e| e.to_string())?;
 
     // 重新初始化 AI 模块
     reinitialize_ai(&state, &config).await?;
@@ -382,6 +391,26 @@ pub fn load_embedding_config_from_db(db: &crate::db::Database) -> EmbeddingConfi
     config
 }
 
+/// 从数据库加载 VLM 任务配置
+pub fn load_vlm_task_config_from_db(db: &crate::db::Database) -> VlmTaskConfig {
+    let mut config = VlmTaskConfig::default();
+
+    if let Ok(Some(v)) = db.get_setting("vlm_task_interval_ms") {
+        config.interval_ms = v.parse().unwrap_or(config.interval_ms);
+    }
+    if let Ok(Some(v)) = db.get_setting("vlm_task_batch_size") {
+        config.batch_size = v.parse().unwrap_or(config.batch_size);
+    }
+    if let Ok(Some(v)) = db.get_setting("vlm_task_concurrency") {
+        config.concurrency = v.parse().unwrap_or(config.concurrency);
+    }
+    if let Ok(Some(v)) = db.get_setting("vlm_task_enabled") {
+        config.enabled = v.parse().unwrap_or(config.enabled);
+    }
+
+    config
+}
+
 /// 重新初始化 AI 模块
 async fn reinitialize_ai(state: &State<'_, AppState>, config: &AiConfig) -> Result<(), String> {
     let mut vlm_initialized = false;
@@ -418,10 +447,12 @@ async fn reinitialize_ai(state: &State<'_, AppState>, config: &AiConfig) -> Resu
         }
     }
 
-    // 如果 VLM 初始化成功，启动 VLM 分析任务
+    // 使用新配置重启 VLM 分析任务
     if vlm_initialized {
-        if let Err(e) = state.start_vlm_task().await {
-            warn!("Failed to start VLM task: {}", e);
+        if let Err(e) = state.restart_vlm_task(config.vlm_task.clone()).await {
+            warn!("Failed to restart VLM task: {}", e);
+        } else {
+            info!("VLM task restarted with new config (concurrency: {})", config.vlm_task.concurrency);
         }
     }
 

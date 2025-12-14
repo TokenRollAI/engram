@@ -167,6 +167,32 @@ impl AppState {
         task.stop();
     }
 
+    /// 使用新配置重启 VLM 分析后台任务
+    pub async fn restart_vlm_task(&self, config: VlmTaskConfig) -> anyhow::Result<()> {
+        // 停止旧任务
+        {
+            let mut task = self.vlm_task.write().await;
+            task.stop();
+        }
+
+        // 创建新任务
+        let new_task = VlmTask::new(
+            self.db.clone(),
+            self.vlm.clone(),
+            self.embedder.clone(),
+            config,
+        );
+
+        // 替换并启动
+        {
+            let mut task = self.vlm_task.write().await;
+            *task = new_task;
+            task.start()?;
+        }
+
+        Ok(())
+    }
+
     /// 检查 VLM 是否可用
     pub async fn is_vlm_ready(&self) -> bool {
         let vlm = self.vlm.read().await;
