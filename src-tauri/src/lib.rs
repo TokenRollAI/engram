@@ -218,15 +218,10 @@ impl AppState {
     /// 使用 VLM 配置启动摘要任务
     pub async fn start_summarizer_task_with_config(&self, vlm_config: ai::VlmConfig) -> anyhow::Result<()> {
         // 从 VLM 配置创建 Summarizer 配置（复用 endpoint 和 api_key）
+        // 视觉模型也能很好地处理纯文本任务，直接使用用户配置的模型
         let summarizer_config = ai::SummarizerConfig {
             endpoint: vlm_config.endpoint,
-            // 对于纯文本摘要，使用更小的模型（如果 VLM 是视觉模型则需要替换）
-            model: if vlm_config.model.contains("vl") || vlm_config.model.contains("vision") {
-                // 视觉模型，尝试使用对应的文本模型
-                vlm_config.model.replace("-vl", "").replace("vl:", ":").replace("-vision", "")
-            } else {
-                vlm_config.model
-            },
+            model: vlm_config.model,
             api_key: vlm_config.api_key,
             max_tokens: 1024,
             temperature: 0.3,
