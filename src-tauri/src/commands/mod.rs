@@ -101,10 +101,20 @@ pub async fn search_traces(
 
     let results = if mode == "semantic" {
         // 语义搜索模式
-        let embedder = state.embedder.read().await;
-        if embedder.is_initialized() {
-            // 生成查询向量
-            match embedder.embed_sync(&query) {
+        // 先检查 embedder 是否初始化，然后释放锁再调用异步方法
+        let is_initialized = {
+            let embedder = state.embedder.read().await;
+            embedder.is_initialized()
+        };
+
+        if is_initialized {
+            // 生成查询向量（使用异步方法支持 API 后端）
+            let embed_result = {
+                let embedder = state.embedder.read().await;
+                embedder.embed(&query).await
+            };
+
+            match embed_result {
                 Ok(query_embedding) => {
                     // 混合搜索
                     let hybrid_results = state
