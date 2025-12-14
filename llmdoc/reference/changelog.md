@@ -87,6 +87,7 @@
 - UI：Timeline 默认按 Session 展示，可展开查看 session 内 traces
 - UI：详情弹窗关闭入口改为右上角 `×`（不再使用底部“关闭”大按钮）
 - Schema: 移除 `activity_session_events`，并将 VLM 结构化结果写回 `traces.vlm_*`；`activity_sessions` 新增 `title/description`；移除 `traces.window_x/y/w/h`
+- UI：Timeline Session 卡片/详情优先展示 `title/description`，并过滤 `PixPin_` 等无聊文本
 
 ---
 

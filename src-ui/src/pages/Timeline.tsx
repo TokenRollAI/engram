@@ -44,6 +44,7 @@ const Timeline: Component = () => {
   const [sessionTraces, setSessionTraces] = createSignal<Trace[]>([]);
   const [selectedTrace, setSelectedTrace] = createSignal<Trace | null>(null);
   const [selectedImageSrc, setSelectedImageSrc] = createSignal<string | null>(null);
+  const [showSessionContext, setShowSessionContext] = createSignal(false);
 
   const [collapsedHours, setCollapsedHours] = createSignal<Set<number>>(new Set());
   const [imageCache, setImageCache] = createSignal<Map<string, string>>(new Map());
@@ -68,6 +69,26 @@ const Timeline: Component = () => {
       console.error("Failed to get image data:", e);
       return null;
     }
+  };
+
+  const stripBoringLines = (text: string): string => {
+    const lines = text.split(/\r?\n/);
+    const filtered = lines.filter((line) => !/PixPin_/i.test(line));
+    return filtered.join("\n").trim();
+  };
+
+  const getSessionTitle = (session: ActivitySession): string => {
+    const title = session.title?.trim();
+    return title ? title : session.app_name;
+  };
+
+  const getSessionDescription = (session: ActivitySession): string | null => {
+    const desc = session.description?.trim();
+    if (desc) return desc;
+    const ctx = session.context_text?.trim();
+    if (!ctx) return null;
+    const stripped = stripBoringLines(ctx);
+    return stripped ? stripped : null;
   };
 
   const loadSessions = async (date: Date) => {
@@ -136,6 +157,7 @@ const Timeline: Component = () => {
 
   const openSessionDetail = async (session: ActivitySession) => {
     setSelectedSession(session);
+    setShowSessionContext(false);
     setSelectedTrace(null);
     setSelectedImageSrc(null);
     try {
@@ -153,6 +175,7 @@ const Timeline: Component = () => {
 
   const closeDetail = () => {
     setSelectedSession(null);
+    setShowSessionContext(false);
     setSessionTraces([]);
     setSelectedTrace(null);
     setSelectedImageSrc(null);
@@ -250,7 +273,10 @@ const Timeline: Component = () => {
                               >
                                 <div class="flex items-center justify-between gap-4">
                                   <div class="min-w-0">
-                                    <div class="font-medium truncate">{session.app_name}</div>
+                                    <div class="font-medium truncate">{getSessionTitle(session)}</div>
+                                    <Show when={session.title && session.title !== session.app_name}>
+                                      <div class="text-xs text-foreground-secondary truncate">{session.app_name}</div>
+                                    </Show>
                                     <div class="text-xs text-foreground-secondary font-mono mt-1">
                                       {format(new Date(session.start_time), "HH:mm")} -{" "}
                                       {format(new Date(session.end_time), "HH:mm")}
@@ -260,9 +286,12 @@ const Timeline: Component = () => {
                                   </div>
                                   <div class="text-xs text-foreground-secondary">查看</div>
                                 </div>
-                                <Show when={session.context_text}>
-                                  <div class="mt-2 text-xs text-foreground-secondary whitespace-pre-wrap max-h-20 overflow-hidden">
-                                    {session.context_text}
+                                <Show
+                                  when={getSessionDescription(session)}
+                                  fallback={<div class="mt-2 text-xs text-foreground-secondary">暂无描述（等待 VLM 更新）</div>}
+                                >
+                                  <div class="mt-2 text-xs text-foreground-secondary line-clamp-2">
+                                    {getSessionDescription(session)}
                                   </div>
                                 </Show>
                               </button>
@@ -294,38 +323,61 @@ const Timeline: Component = () => {
               <span class="text-xl leading-none">×</span>
             </button>
 
-            <div class="max-h-[90vh] overflow-auto">
-              <div class="p-6 pr-14">
-              <h3 class="text-lg font-semibold mb-4">{selectedSession()!.app_name}</h3>
+	            <div class="max-h-[90vh] overflow-auto">
+	              <div class="p-6 pr-14">
+	              <h3 class="text-lg font-semibold mb-1">{getSessionTitle(selectedSession()!)}</h3>
+	              <Show when={selectedSession()!.title && selectedSession()!.title !== selectedSession()!.app_name}>
+	                <div class="text-sm text-foreground-secondary mb-3">{selectedSession()!.app_name}</div>
+	              </Show>
+	              <Show when={!selectedSession()!.title || selectedSession()!.title === selectedSession()!.app_name}>
+	                <div class="mb-3" />
+	              </Show>
 
-              <dl class="space-y-2 text-sm">
-                <div class="flex">
-                  <dt class="w-24 text-foreground-secondary">时间</dt>
-                  <dd>
+	              <dl class="space-y-2 text-sm">
+	                <div class="flex">
+	                  <dt class="w-24 text-foreground-secondary">时间</dt>
+	                  <dd>
                     {format(new Date(selectedSession()!.start_time), "yyyy-MM-dd HH:mm")} -{" "}
                     {format(new Date(selectedSession()!.end_time), "HH:mm")}
                   </dd>
                 </div>
-                <div class="flex">
-                  <dt class="w-24 text-foreground-secondary">Trace 数</dt>
-                  <dd>{selectedSession()!.trace_count}</dd>
-                </div>
-                <Show when={selectedSession()?.context_text}>
-                  <div>
-                    <dt class="text-foreground-secondary mb-1">Session 结论</dt>
-                    <dd class="bg-background p-3 rounded text-xs font-mono max-h-40 overflow-auto whitespace-pre-wrap">
-                      {selectedSession()?.context_text}
-                    </dd>
-                  </div>
-                </Show>
-              </dl>
+	                <div class="flex">
+	                  <dt class="w-24 text-foreground-secondary">Trace 数</dt>
+	                  <dd>{selectedSession()!.trace_count}</dd>
+	                </div>
+	                <Show when={getSessionDescription(selectedSession()!)}>
+	                  <div>
+	                    <dt class="text-foreground-secondary mb-1">描述</dt>
+	                    <dd class="bg-background p-3 rounded text-sm whitespace-pre-wrap">
+	                      {getSessionDescription(selectedSession()!)}
+	                    </dd>
+	                  </div>
+	                </Show>
+	              </dl>
 
-              <Show when={selectedSession()?.key_actions_json}>
-                <div class="mt-6">
-                  <h4 class="text-sm font-semibold mb-3">关键行为</h4>
-                  <KeyActionsPanel keyActionsJson={selectedSession()!.key_actions_json!} />
-                </div>
-              </Show>
+	              <Show when={selectedSession()?.context_text}>
+	                <div class="mt-4">
+	                  <button
+	                    type="button"
+	                    class="text-xs text-foreground-secondary hover:text-white transition-colors"
+	                    onClick={() => setShowSessionContext((v) => !v)}
+	                  >
+	                    {showSessionContext() ? "隐藏原始上下文" : "显示原始上下文（调试）"}
+	                  </button>
+	                  <Show when={showSessionContext()}>
+	                    <div class="mt-2 bg-background p-3 rounded text-xs font-mono max-h-40 overflow-auto whitespace-pre-wrap">
+	                      {stripBoringLines(selectedSession()!.context_text!)}
+	                    </div>
+	                  </Show>
+	                </div>
+	              </Show>
+
+	              <Show when={selectedSession()?.key_actions_json}>
+	                <div class="mt-6">
+	                  <h4 class="text-sm font-semibold mb-3">关键行为</h4>
+	                  <KeyActionsPanel keyActionsJson={selectedSession()!.key_actions_json!} />
+	                </div>
+	              </Show>
 
               <div class="mt-6">
                 <h4 class="text-sm font-semibold mb-3">本 Session 的 Traces</h4>
