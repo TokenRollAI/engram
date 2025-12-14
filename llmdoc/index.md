@@ -17,6 +17,7 @@
 - [系统架构总览](./architecture/system-overview.md) - 四层架构设计
 - [数据流设计](./architecture/data-flow.md) - 数据采集、处理、存储流程
 - [数据库设计](./architecture/database.md) - SQLite Schema 与向量索引
+- [配置系统架构](./architecture/config-system.md) - TOML 文件配置管理（新增）
 - [AI 管道设计](./architecture/ai-pipeline.md) - VLM 视觉理解、文本嵌入、向量搜索流水线
 
 ### 开发指南 (Guides)
@@ -36,6 +37,8 @@
 |------------|---------|
 | 项目是什么、为什么要做 | [项目愿景](./overview/vision.md) |
 | 系统如何工作 | [系统架构](./architecture/system-overview.md) |
+| 如何配置应用 | [配置系统](./architecture/config-system.md) |
+| AI 模型如何工作 | [AI 管道设计](./architecture/ai-pipeline.md) |
 | 如何开始开发 | [开发环境搭建](./guides/dev-setup.md) |
 | 下一步做什么 | [实现路线图](./guides/roadmap.md) |
 | UI 长什么样 | [GUI 设计规范](./reference/gui-spec.md) |

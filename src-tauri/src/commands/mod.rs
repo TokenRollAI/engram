@@ -369,31 +369,16 @@ fn apply_trace_filters(
 pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     debug!("get_settings");
 
-    let mut settings = Settings::default();
-
-    if let Ok(Some(v)) = state.db.get_setting("capture_interval_ms") {
-        settings.capture_interval_ms = v.parse().unwrap_or(settings.capture_interval_ms);
-    }
-    if let Ok(Some(v)) = state.db.get_setting("idle_threshold_ms") {
-        settings.idle_threshold_ms = v.parse().unwrap_or(settings.idle_threshold_ms);
-    }
-    if let Ok(Some(v)) = state.db.get_setting("similarity_threshold") {
-        settings.similarity_threshold = v.parse().unwrap_or(settings.similarity_threshold);
-    }
-    if let Ok(Some(v)) = state.db.get_setting("hot_data_days") {
-        settings.hot_data_days = v.parse().unwrap_or(settings.hot_data_days);
-    }
-    if let Ok(Some(v)) = state.db.get_setting("warm_data_days") {
-        settings.warm_data_days = v.parse().unwrap_or(settings.warm_data_days);
-    }
-    if let Ok(Some(v)) = state.db.get_setting("summary_interval_min") {
-        settings.summary_interval_min = v.parse().unwrap_or(settings.summary_interval_min);
-    }
-    if let Ok(Some(v)) = state.db.get_setting("session_gap_threshold_ms") {
-        settings.session_gap_threshold_ms = v.parse().unwrap_or(settings.session_gap_threshold_ms);
-    }
-
-    Ok(settings)
+    let config = state.config.read().await;
+    Ok(Settings {
+        capture_interval_ms: config.capture.interval_ms,
+        idle_threshold_ms: config.capture.idle_threshold_ms,
+        similarity_threshold: config.capture.similarity_threshold,
+        hot_data_days: config.storage.hot_data_days,
+        warm_data_days: config.storage.warm_data_days,
+        summary_interval_min: config.summary.interval_min,
+        session_gap_threshold_ms: config.session.gap_threshold_ms,
+    })
 }
 
 /// 更新设置
@@ -401,47 +386,16 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
 pub async fn update_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
     info!("update_settings: {:?}", settings);
 
-    state
-        .db
-        .set_setting(
-            "capture_interval_ms",
-            &settings.capture_interval_ms.to_string(),
-        )
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting("idle_threshold_ms", &settings.idle_threshold_ms.to_string())
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting(
-            "similarity_threshold",
-            &settings.similarity_threshold.to_string(),
-        )
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting("hot_data_days", &settings.hot_data_days.to_string())
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting("warm_data_days", &settings.warm_data_days.to_string())
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting(
-            "summary_interval_min",
-            &settings.summary_interval_min.to_string(),
-        )
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting(
-            "session_gap_threshold_ms",
-            &settings.session_gap_threshold_ms.to_string(),
-        )
-        .map_err(|e| e.to_string())?;
+    let mut config = state.config.write().await;
+    config.capture.interval_ms = settings.capture_interval_ms;
+    config.capture.idle_threshold_ms = settings.idle_threshold_ms;
+    config.capture.similarity_threshold = settings.similarity_threshold;
+    config.storage.hot_data_days = settings.hot_data_days;
+    config.storage.warm_data_days = settings.warm_data_days;
+    config.summary.interval_min = settings.summary_interval_min;
+    config.session.gap_threshold_ms = settings.session_gap_threshold_ms;
 
+    config.save().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -514,171 +468,35 @@ pub struct AiConfig {
 pub async fn get_ai_config(state: State<'_, AppState>) -> Result<AiConfig, String> {
     debug!("get_ai_config");
 
-    // 从数据库读取配置
-    let vlm_config = load_vlm_config_from_db(&state.db);
-    let embedding_config = load_embedding_config_from_db(&state.db);
-    let vlm_task_config = load_vlm_task_config_from_db(&state.db);
-
+    let config = state.config.read().await;
     Ok(AiConfig {
-        vlm: vlm_config,
-        embedding: embedding_config,
-        vlm_task: vlm_task_config,
+        vlm: config.vlm.clone(),
+        embedding: config.embedding.clone(),
+        vlm_task: config.vlm_task.clone(),
     })
 }
 
 /// 更新 AI 配置
 #[tauri::command]
-pub async fn update_ai_config(state: State<'_, AppState>, config: AiConfig) -> Result<(), String> {
+pub async fn update_ai_config(state: State<'_, AppState>, ai_config: AiConfig) -> Result<(), String> {
     info!(
         "update_ai_config: vlm.endpoint={}, embedding.endpoint={:?}, vlm_task.concurrency={}",
-        config.vlm.endpoint, config.embedding.endpoint, config.vlm_task.concurrency
+        ai_config.vlm.endpoint, ai_config.embedding.endpoint, ai_config.vlm_task.concurrency
     );
 
-    // 保存 VLM 配置到数据库
-    state
-        .db
-        .set_setting("vlm_endpoint", &config.vlm.endpoint)
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting("vlm_model", &config.vlm.model)
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting("vlm_api_key", config.vlm.api_key.as_deref().unwrap_or(""))
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting("vlm_max_tokens", &config.vlm.max_tokens.to_string())
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting("vlm_temperature", &config.vlm.temperature.to_string())
-        .map_err(|e| e.to_string())?;
-
-    // 保存 Embedding 配置到数据库
-    state
-        .db
-        .set_setting(
-            "embedding_endpoint",
-            config.embedding.endpoint.as_deref().unwrap_or(""),
-        )
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting("embedding_model", &config.embedding.model)
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting(
-            "embedding_api_key",
-            config.embedding.api_key.as_deref().unwrap_or(""),
-        )
-        .map_err(|e| e.to_string())?;
-
-    // 保存 VLM 任务配置到数据库
-    state
-        .db
-        .set_setting(
-            "vlm_task_interval_ms",
-            &config.vlm_task.interval_ms.to_string(),
-        )
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting(
-            "vlm_task_batch_size",
-            &config.vlm_task.batch_size.to_string(),
-        )
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting(
-            "vlm_task_concurrency",
-            &config.vlm_task.concurrency.to_string(),
-        )
-        .map_err(|e| e.to_string())?;
-    state
-        .db
-        .set_setting("vlm_task_enabled", &config.vlm_task.enabled.to_string())
-        .map_err(|e| e.to_string())?;
+    // 更新配置并保存到文件
+    {
+        let mut config = state.config.write().await;
+        config.vlm = ai_config.vlm.clone();
+        config.embedding = ai_config.embedding.clone();
+        config.vlm_task = ai_config.vlm_task.clone();
+        config.save().map_err(|e| e.to_string())?;
+    }
 
     // 重新初始化 AI 模块
-    reinitialize_ai(&state, &config).await?;
+    reinitialize_ai(&state, &ai_config).await?;
 
     Ok(())
-}
-
-/// 从数据库加载 VLM 配置
-pub fn load_vlm_config_from_db(db: &crate::db::Database) -> VlmConfig {
-    let mut config = VlmConfig::default();
-
-    if let Ok(Some(v)) = db.get_setting("vlm_endpoint") {
-        if !v.is_empty() {
-            config.endpoint = v;
-        }
-    }
-    if let Ok(Some(v)) = db.get_setting("vlm_model") {
-        if !v.is_empty() {
-            config.model = v;
-        }
-    }
-    if let Ok(Some(v)) = db.get_setting("vlm_api_key") {
-        if !v.is_empty() {
-            config.api_key = Some(v);
-        }
-    }
-    if let Ok(Some(v)) = db.get_setting("vlm_max_tokens") {
-        config.max_tokens = v.parse().unwrap_or(config.max_tokens);
-    }
-    if let Ok(Some(v)) = db.get_setting("vlm_temperature") {
-        config.temperature = v.parse().unwrap_or(config.temperature);
-    }
-
-    config
-}
-
-/// 从数据库加载 Embedding 配置
-pub fn load_embedding_config_from_db(db: &crate::db::Database) -> EmbeddingConfig {
-    let mut config = EmbeddingConfig::default();
-
-    if let Ok(Some(v)) = db.get_setting("embedding_endpoint") {
-        if !v.is_empty() {
-            config.endpoint = Some(v);
-        }
-    }
-    if let Ok(Some(v)) = db.get_setting("embedding_model") {
-        if !v.is_empty() {
-            config.model = v;
-        }
-    }
-    if let Ok(Some(v)) = db.get_setting("embedding_api_key") {
-        if !v.is_empty() {
-            config.api_key = Some(v);
-        }
-    }
-
-    config
-}
-
-/// 从数据库加载 VLM 任务配置
-pub fn load_vlm_task_config_from_db(db: &crate::db::Database) -> VlmTaskConfig {
-    let mut config = VlmTaskConfig::default();
-
-    if let Ok(Some(v)) = db.get_setting("vlm_task_interval_ms") {
-        config.interval_ms = v.parse().unwrap_or(config.interval_ms);
-    }
-    if let Ok(Some(v)) = db.get_setting("vlm_task_batch_size") {
-        config.batch_size = v.parse().unwrap_or(config.batch_size);
-    }
-    if let Ok(Some(v)) = db.get_setting("vlm_task_concurrency") {
-        config.concurrency = v.parse().unwrap_or(config.concurrency);
-    }
-    if let Ok(Some(v)) = db.get_setting("vlm_task_enabled") {
-        config.enabled = v.parse().unwrap_or(config.enabled);
-    }
-
-    config
 }
 
 /// 重新初始化 AI 模块

@@ -6,6 +6,75 @@
 
 ---
 
+## [Phase 3 M3.3 配置系统重构：SQLite → TOML] - 2025-12-15
+
+### 变更内容
+
+**重构范围**：配置管理从 SQLite 设置表迁移到独立的 TOML 文件
+
+#### 1. 新增配置模块
+
+`src-tauri/src/config/mod.rs` (~230 行)：
+
+核心配置结构体：
+- `AppConfig`：顶层配置聚合
+- `CaptureConfig`：截图捕获设置（interval_ms, idle_threshold_ms, similarity_threshold）
+- `StorageConfig`：数据存储设置（hot_data_days, warm_data_days）
+- `SessionConfig`：会话管理设置（gap_threshold_ms）
+- `SummaryConfig`：摘要生成设置（interval_min）
+- 复用 `VlmConfig`、`EmbeddingConfig`、`VlmTaskConfig`
+
+配置文件位置（XDG 规范）：
+- Linux: `~/.config/engram/Engram/config.toml`
+- macOS: `~/Library/Application Support/com.engram.Engram/config.toml`
+- Windows: `%APPDATA%\engram\Engram\config.toml`
+
+#### 2. AppState 配置驱动初始化
+
+`src-tauri/src/lib.rs` (AppState)：
+
+**新增字段**：
+- `config: Arc<RwLock<AppConfig>>` - 配置在内存中的镜像
+
+**初始化流程**：
+1. 调用 `AppConfig::load()` 从 TOML 文件加载配置
+2. 使用加载的配置参数初始化各模块
+3. 调用 `try_auto_initialize_ai()` 基于配置初始化 AI
+
+#### 3. 前端命令更新
+
+`src-tauri/src/commands/mod.rs`：
+
+- `get_settings()` - 从内存配置返回设置（不再数据库查询）
+- `update_settings(settings: Settings)` - 更新并保存到 TOML 文件
+- `get_ai_config()` - 返回 VlmConfig、EmbeddingConfig、VlmTaskConfig
+- `update_ai_config(ai_config: AiConfig)` - 更新 AI 配置并重新初始化
+
+#### 4. 移除的代码
+
+**删除的数据库操作**：
+- `load_vlm_config_from_db()`
+- `load_embedding_config_from_db()`
+- `load_vlm_task_config_from_db()`
+- 所有 SQLite settings 表的配置查询逻辑
+
+#### 5. 依赖更新
+
+`Cargo.toml`：
+- 新增 `directories = "5.0"` - XDG 规范路径
+- 新增 `toml = "0.8"` - TOML 序列化/反序列化
+
+#### 6. 文档更新
+
+新增：
+- `llmdoc/architecture/config-system.md` - 配置系统完整设计文档
+
+更新：
+- `llmdoc/architecture/ai-pipeline.md` - VlmConfig/EmbeddingConfig 加载方式
+- `llmdoc/index.md` - 添加配置系统文档
+
+---
+
 ## [Phase 3 M3.3 Activity Session 核心化与 Chat 持久化] - 2025-12-15
 
 ### 变更内容
@@ -16,6 +85,7 @@
 - 新增关键行为：VLM 返回 `is_key_action` + `action_description`，写入 `traces.is_key_action`、`activity_session_events` 并聚合到 `activity_sessions.key_actions_json`
 - Chat：新增线程/消息持久化（`chat_threads`/`chat_messages`），响应包含 `thread_id`
 - UI：Timeline 默认按 Session 展示，可展开查看 session 内 traces
+- UI：详情弹窗关闭入口改为右上角 `×`（不再使用底部“关闭”大按钮）
 
 ---
 

@@ -245,42 +245,81 @@ Input: Trace { id, image_path, ocr_text=NULL, ... }
               或 Error (failed_count++)
 ```
 
-### 与 AppState 集成
+### 与 AppState 集成（配置驱动）
+
+**源文件**: `src-tauri/src/lib.rs` (AppState)
+
+AppState 启动时自动从 TOML 配置文件加载所有配置参数：
 
 ```rust
 pub struct AppState {
+    /// 应用配置（TOML 文件）- 核心配置集中管理
+    pub config: Arc<RwLock<AppConfig>>,
     pub db: Arc<Database>,
     pub daemon: Arc<RwLock<EngramDaemon>>,
     pub vlm: Arc<RwLock<Option<VlmEngine>>>,
     pub embedder: Arc<RwLock<TextEmbedder>>,
-    pub vlm_task: Arc<RwLock<VlmTask>>,  // M3.1 新增
+    pub vlm_task: Arc<RwLock<VlmTask>>,
+    pub summarizer_task: Arc<RwLock<SummarizerTask>>,
 }
 
 impl AppState {
     pub async fn new() -> anyhow::Result<Self> {
-        // ... 初始化其他部分 ...
+        // 1. 从 TOML 文件加载配置
+        let app_config = AppConfig::load()?;
+        let config = Arc::new(RwLock::new(app_config.clone()));
 
-        // 创建 VlmTask（默认启用）
+        // 2. 初始化数据库
+        let db = Arc::new(Database::new()?);
+
+        // 3. 使用配置参数创建 daemon
+        let daemon = Arc::new(RwLock::new(EngramDaemon::new_with_config(
+            db.clone(),
+            app_config.capture.interval_ms,
+            app_config.capture.idle_threshold_ms,
+            app_config.capture.similarity_threshold,
+        )?));
+
+        let vlm = Arc::new(RwLock::new(None));
+        let embedder = Arc::new(RwLock::new(TextEmbedder::new()));
+
+        // 4. 使用配置创建 VLM 任务
         let vlm_task = Arc::new(RwLock::new(VlmTask::new(
             db.clone(),
             vlm.clone(),
             embedder.clone(),
-            VlmTaskConfig::default(),
+            app_config.vlm_task.clone(),  // 从 TOML 加载
         )));
 
-        // ... 尝试自动初始化 AI ...
+        // 5. 创建摘要任务
+        let summarizer_task = Arc::new(RwLock::new(SummarizerTask::new(
+            db.clone(),
+            SummarizerTaskConfig::default(),
+        )));
 
-        // 如果 VLM 初始化成功，启动后台任务
-        if vlm_initialized {
-            let mut task = state.vlm_task.write().await;
-            task.start()?;
-            info!("VLM background task started");
-        }
+        let state = Self {
+            config,
+            db,
+            daemon,
+            vlm,
+            embedder,
+            vlm_task,
+            summarizer_task,
+        };
+
+        // 6. 尝试自动初始化 AI（基于 TOML 配置）
+        state.try_auto_initialize_ai().await;
 
         Ok(state)
     }
 }
 ```
+
+**配置加载来源**: `src-tauri/src/config/mod.rs` - AppConfig 结构体
+- VlmConfig - 从 `[vlm]` 部分加载
+- EmbeddingConfig - 从 `[embedding]` 部分加载
+- VlmTaskConfig - 从 `[vlm_task]` 部分加载
+- 其他配置 - capture、storage、session、summary 等
 
 ### 性能特性
 
@@ -337,7 +376,14 @@ text_embedding (384d)
 [存储到 SQLite]
 ```
 
-### VlmConfig 配置
+### VlmConfig 配置（从 TOML 文件加载）
+
+**配置来源**: `src-tauri/src/config/mod.rs` (AppConfig) - TOML 文件存储
+
+配置文件路径（XDG 规范）:
+- Linux: `~/.config/engram/Engram/config.toml`
+- macOS: `~/Library/Application Support/com.engram.Engram/config.toml`
+- Windows: `%APPDATA%\engram\Engram\config.toml`
 
 ```rust
 pub struct VlmConfig {
@@ -357,6 +403,27 @@ pub struct VlmConfig {
 let ollama_config = VlmConfig::ollama("qwen3-vl:4b");
 let openai_config = VlmConfig::openai("sk-...", "gpt-4v");
 let custom_config = VlmConfig::custom("http://...", "model", Some("key"));
+```
+
+**配置加载流程**:
+```rust
+// 1. AppState 初始化时从文件加载配置
+let app_config = AppConfig::load()?;  // TOML 文件
+
+// 2. 将 VlmConfig 传入各个初始化器
+let vlm_config = app_config.vlm.clone();
+let mut vlm_engine = VlmEngine::new(vlm_config);
+vlm_engine.initialize().await?;
+```
+
+**TOML 文件示例**:
+```toml
+[vlm]
+endpoint = "http://localhost:11434/v1"
+model = "qwen3-vl:4b"
+max_tokens = 512
+temperature = 0.3
+# api_key = "sk-..." (仅云端服务需要)
 ```
 
 ### VlmEngine 核心接口
@@ -531,7 +598,9 @@ base64 = "0.22"
 └─────────────────────────────────────────────┘
 ```
 
-### EmbeddingConfig 配置
+### EmbeddingConfig 配置（从 TOML 文件加载）
+
+**配置来源**: `src-tauri/src/config/mod.rs` (AppConfig) - TOML 文件存储
 
 ```rust
 pub struct EmbeddingConfig {
@@ -548,6 +617,26 @@ let local = EmbeddingConfig::local();                    // 本地 MiniLM
 let openai = EmbeddingConfig::openai("sk-...");          // OpenAI API
 let ollama = EmbeddingConfig::ollama("nomic-embed-text"); // Ollama
 let custom = EmbeddingConfig::custom(endpoint, model, api_key);
+```
+
+**配置加载流程**:
+```rust
+// 1. AppState 初始化时从文件加载配置
+let app_config = AppConfig::load()?;  // TOML 文件
+
+// 2. 将 EmbeddingConfig 传入嵌入器初始化
+let embedding_config = app_config.embedding.clone();
+let mut embedder = TextEmbedder::with_config(embedding_config);
+embedder.initialize().await?;  // 失败时自动回退到本地
+```
+
+**TOML 文件示例**:
+```toml
+[embedding]
+# 留空 endpoint 使用本地 MiniLM
+# endpoint = "http://localhost:11434/v1"
+model = "all-MiniLM-L6-v2"
+# api_key = "sk-..." (仅云端服务需要)
 ```
 
 ### TextEmbedder 核心接口

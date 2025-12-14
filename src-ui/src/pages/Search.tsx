@@ -588,70 +588,74 @@ const Search: Component = () => {
           onClick={closeDetail}
         >
           <div
-            class="bg-background-secondary rounded-lg max-w-5xl max-h-[90vh] overflow-auto m-4"
+            class="relative bg-background-secondary rounded-lg max-w-5xl max-h-[90vh] overflow-hidden m-4"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* 图像预览 */}
-            <div class="relative bg-background">
-              <Show
-                when={selectedImageSrc()}
-                fallback={
-                  <div class="aspect-video flex items-center justify-center text-foreground-secondary">
-                    无图像
-                  </div>
-                }
-              >
-                <img
-                  src={selectedImageSrc()!}
-                  alt="Screenshot"
-                  class="w-full h-auto max-h-[60vh] object-contain"
-                />
-              </Show>
-            </div>
+            <button
+              type="button"
+              class="absolute top-3 right-3 z-10 inline-flex items-center justify-center w-9 h-9 rounded text-foreground-secondary hover:text-white hover:bg-background-card transition-colors focus:outline-none focus:ring-2 focus:ring-accent"
+              aria-label="关闭"
+              onClick={closeDetail}
+            >
+              <span class="text-xl leading-none">×</span>
+            </button>
 
-            {/* 详细信息 */}
-            <div class="p-6">
-              <div class="flex items-center justify-between mb-4">
-                <h3 class="text-lg font-semibold">
-                  {selectedResult()?.trace.app_name || "未知应用"}
-                </h3>
-                <span class="px-3 py-1 bg-accent/20 text-accent rounded">
-                  相关度: {((selectedResult()?.score ?? 0) * 100).toFixed(0)}%
-                </span>
+            <div class="max-h-[90vh] overflow-auto">
+              {/* 图像预览 */}
+              <div class="relative bg-background">
+                <Show
+                  when={selectedImageSrc()}
+                  fallback={
+                    <div class="aspect-video flex items-center justify-center text-foreground-secondary">
+                      无图像
+                    </div>
+                  }
+                >
+                  <img
+                    src={selectedImageSrc()!}
+                    alt="Screenshot"
+                    class="w-full h-auto max-h-[60vh] object-contain"
+                  />
+                </Show>
               </div>
 
-              <dl class="space-y-2 text-sm">
-                <div class="flex">
-                  <dt class="w-24 text-foreground-secondary">时间</dt>
-                  <dd>
-                    {selectedResult() &&
-                      format(
-                        new Date(selectedResult()!.trace.timestamp),
-                        "yyyy-MM-dd HH:mm:ss"
-                      )}
-                  </dd>
+              {/* 详细信息 */}
+              <div class="p-6 pr-14">
+                <div class="flex items-center justify-between mb-4">
+                  <h3 class="text-lg font-semibold">
+                    {selectedResult()?.trace.app_name || "未知应用"}
+                  </h3>
+                  <span class="px-3 py-1 bg-accent/20 text-accent rounded">
+                    相关度: {((selectedResult()?.score ?? 0) * 100).toFixed(0)}%
+                  </span>
                 </div>
-                <div class="flex">
-                  <dt class="w-24 text-foreground-secondary">窗口标题</dt>
-                  <dd class="flex-1 break-all">{selectedResult()?.trace.window_title || "-"}</dd>
-                </div>
-                <Show when={selectedResult()?.trace.ocr_text}>
-                  <div>
-                    <dt class="text-foreground-secondary mb-1">OCR 文本</dt>
-                    <dd
-                      class="bg-background p-3 rounded text-xs max-h-60 overflow-auto whitespace-pre-wrap"
-                      innerHTML={highlightText(selectedResult()?.trace.ocr_text || "", query())}
-                    />
-                  </div>
-                </Show>
-              </dl>
 
-              <button
-                class="mt-6 w-full py-2 bg-accent hover:bg-accent-hover rounded transition-colors"
-                onClick={closeDetail}
-              >
-                关闭
-              </button>
+                <dl class="space-y-2 text-sm">
+                  <div class="flex">
+                    <dt class="w-24 text-foreground-secondary">时间</dt>
+                    <dd>
+                      {selectedResult() &&
+                        format(
+                          new Date(selectedResult()!.trace.timestamp),
+                          "yyyy-MM-dd HH:mm:ss"
+                        )}
+                    </dd>
+                  </div>
+                  <div class="flex">
+                    <dt class="w-24 text-foreground-secondary">窗口标题</dt>
+                    <dd class="flex-1 break-all">{selectedResult()?.trace.window_title || "-"}</dd>
+                  </div>
+                  <Show when={selectedResult()?.trace.ocr_text}>
+                    <div>
+                      <dt class="text-foreground-secondary mb-1">OCR 文本</dt>
+                      <dd
+                        class="bg-background p-3 rounded text-xs max-h-60 overflow-auto whitespace-pre-wrap"
+                        innerHTML={highlightText(selectedResult()?.trace.ocr_text || "", query())}
+                      />
+                    </div>
+                  </Show>
+                </dl>
+              </div>
             </div>
           </div>
         </div>

@@ -62,15 +62,30 @@ pub struct EngramDaemon {
 impl EngramDaemon {
     /// 创建新的守护进程
     pub fn new(db: Arc<Database>) -> anyhow::Result<Self> {
+        Self::new_with_config(
+            db,
+            DEFAULT_CAPTURE_INTERVAL_MS,
+            DEFAULT_IDLE_THRESHOLD_MS,
+            DEFAULT_SIMILARITY_THRESHOLD,
+        )
+    }
+
+    /// 使用指定配置创建守护进程
+    pub fn new_with_config(
+        db: Arc<Database>,
+        capture_interval_ms: u64,
+        idle_threshold_ms: u64,
+        similarity_threshold: u32,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             db,
             is_running: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
             is_idle: Arc::new(AtomicBool::new(false)),
             idle_time_ms: Arc::new(AtomicU64::new(0)),
-            capture_interval_ms: DEFAULT_CAPTURE_INTERVAL_MS,
-            idle_threshold_ms: DEFAULT_IDLE_THRESHOLD_MS,
-            similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
+            capture_interval_ms,
+            idle_threshold_ms,
+            similarity_threshold,
             shutdown_tx: None,
             last_capture_time: Arc::new(AtomicU64::new(0)),
             total_captures_today: Arc::new(AtomicU64::new(0)),

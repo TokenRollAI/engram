@@ -279,10 +279,20 @@ const Timeline: Component = () => {
       <Show when={selectedSession()}>
         <div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50" onClick={closeDetail}>
           <div
-            class="bg-background-secondary rounded-lg max-w-5xl max-h-[90vh] overflow-auto m-4"
+            class="relative bg-background-secondary rounded-lg max-w-5xl max-h-[90vh] overflow-hidden m-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <div class="p-6">
+            <button
+              type="button"
+              class="absolute top-3 right-3 z-10 inline-flex items-center justify-center w-9 h-9 rounded text-foreground-secondary hover:text-white hover:bg-background-card transition-colors focus:outline-none focus:ring-2 focus:ring-accent"
+              aria-label="关闭"
+              onClick={closeDetail}
+            >
+              <span class="text-xl leading-none">×</span>
+            </button>
+
+            <div class="max-h-[90vh] overflow-auto">
+              <div class="p-6 pr-14">
               <h3 class="text-lg font-semibold mb-4">{selectedSession()!.app_name}</h3>
 
               <dl class="space-y-2 text-sm">
@@ -370,10 +380,7 @@ const Timeline: Component = () => {
                   </dl>
                 </div>
               </Show>
-
-              <button class="mt-6 w-full py-2 bg-accent hover:bg-accent-hover rounded transition-colors" onClick={closeDetail}>
-                关闭
-              </button>
+              </div>
             </div>
           </div>
         </div>
