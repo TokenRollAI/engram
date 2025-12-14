@@ -741,11 +741,12 @@ fn build_chat_context(traces: &[Trace]) -> String {
 
         if let Some(ocr_text) = &trace.ocr_text {
             if !ocr_text.is_empty() {
-                // 截断过长的 OCR 文本
-                let text = if ocr_text.len() > 200 {
-                    format!("{}...", &ocr_text[..200])
+                // 截断过长的 OCR 文本（按字符数而非字节数，避免 UTF-8 边界问题）
+                let text: String = ocr_text.chars().take(200).collect();
+                let text = if ocr_text.chars().count() > 200 {
+                    format!("{}...", text)
                 } else {
-                    ocr_text.clone()
+                    text
                 };
                 context.push_str(&format!("  内容: {}\n", text));
             }
