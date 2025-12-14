@@ -283,7 +283,7 @@ impl Summarizer {
         for trace in traces.iter().take(50) {
             // 限制上下文大小
             let time = chrono::DateTime::from_timestamp_millis(trace.timestamp)
-                .map(|t| t.format("%H:%M:%S").to_string())
+                .map(|t| t.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
                 .unwrap_or_default();
 
             let app = trace.app_name.as_deref().unwrap_or("Unknown");

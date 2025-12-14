@@ -629,13 +629,14 @@ pub async fn chat_with_memory(
         request.app_filter
     );
 
-    // 确定时间范围
-    let now = chrono::Utc::now().timestamp();
+    // 确定时间范围（毫秒级，与数据库保持一致）
+    let now = chrono::Utc::now().timestamp_millis();
+    let day_ms = 24 * 3600 * 1000i64;
     let (start_time, end_time) = match (request.start_time, request.end_time) {
         (Some(s), Some(e)) => (s, e),
         (Some(s), None) => (s, now),
-        (None, Some(e)) => (e - 24 * 3600, e), // 默认向前24小时
-        (None, None) => (now - 24 * 3600, now), // 默认最近24小时
+        (None, Some(e)) => (e - day_ms, e), // 默认向前24小时
+        (None, None) => (now - day_ms, now), // 默认最近24小时
     };
 
     // 获取时间范围内的 traces
@@ -697,8 +698,9 @@ pub async fn get_available_apps(
     start_time: Option<i64>,
     end_time: Option<i64>,
 ) -> Result<Vec<String>, String> {
-    let now = chrono::Utc::now().timestamp();
-    let start = start_time.unwrap_or(now - 7 * 24 * 3600); // 默认最近7天
+    let now = chrono::Utc::now().timestamp_millis();
+    let week_ms = 7 * 24 * 3600 * 1000i64;
+    let start = start_time.unwrap_or(now - week_ms); // 默认最近7天
     let end = end_time.unwrap_or(now);
 
     state
@@ -713,8 +715,9 @@ fn build_chat_context(traces: &[Trace]) -> String {
 
     for trace in traces.iter().take(30) {
         // 限制30条以避免上下文过长
-        let time = chrono::DateTime::from_timestamp(trace.timestamp, 0)
-            .map(|t| t.format("%m-%d %H:%M").to_string())
+        // timestamp 是毫秒级，需要转换为秒级并使用本地时区
+        let time = chrono::DateTime::from_timestamp_millis(trace.timestamp)
+            .map(|t| t.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string())
             .unwrap_or_default();
 
         let app = trace.app_name.as_deref().unwrap_or("未知应用");
@@ -743,14 +746,36 @@ fn build_chat_context(traces: &[Trace]) -> String {
     context
 }
 
-/// 格式化时间范围描述
+/// 格式化时间范围描述（毫秒时间戳，使用本地时区）
 fn format_time_range(start: i64, end: i64) -> String {
-    let start_dt = chrono::DateTime::from_timestamp(start, 0)
-        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+    let start_dt = chrono::DateTime::from_timestamp_millis(start)
+        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_default();
-    let end_dt = chrono::DateTime::from_timestamp(end, 0)
-        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+    let end_dt = chrono::DateTime::from_timestamp_millis(end)
+        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_default();
 
     format!("{} 至 {}", start_dt, end_dt)
+}
+
+/// 手动触发摘要生成
+#[tauri::command]
+pub async fn trigger_summary(
+    state: State<'_, AppState>,
+    summary_type: String,
+) -> Result<String, String> {
+    use crate::ai::summarizer::SummaryType;
+
+    let stype = match summary_type.as_str() {
+        "short" => SummaryType::Short,
+        "daily" => SummaryType::Daily,
+        _ => return Err("无效的摘要类型，请使用 'short' 或 'daily'".to_string()),
+    };
+
+    let task = state.summarizer_task.read().await;
+    task.trigger_summary(stype)
+        .await
+        .map_err(|e| format!("生成摘要失败: {}", e))?;
+
+    Ok(format!("{}摘要生成成功", if summary_type == "daily" { "每日" } else { "15分钟" }))
 }

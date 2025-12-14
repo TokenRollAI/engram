@@ -33,6 +33,7 @@ interface StructuredData {
 const Summaries: Component = () => {
   const [summaries, setSummaries] = createSignal<Summary[]>([]);
   const [loading, setLoading] = createSignal(false);
+  const [generating, setGenerating] = createSignal(false);
   const [selectedSummary, setSelectedSummary] = createSignal<Summary | null>(null);
   const [summaryType, setSummaryType] = createSignal<string>("all");
   const [dateRange, setDateRange] = createSignal<number>(7); // 默认7天
@@ -71,6 +72,21 @@ const Summaries: Component = () => {
       }
     } catch (e) {
       console.error("Failed to delete summary:", e);
+    }
+  };
+
+  // 手动触发摘要生成
+  const triggerSummary = async (type: "short" | "daily") => {
+    setGenerating(true);
+    try {
+      const result = await invoke<string>("trigger_summary", { summaryType: type });
+      alert(result);
+      // 刷新列表
+      fetchSummaries();
+    } catch (e) {
+      alert(`生成失败: ${e}`);
+    } finally {
+      setGenerating(false);
     }
   };
 
@@ -203,6 +219,32 @@ const Summaries: Component = () => {
           >
             {loading() ? "加载中..." : "刷新"}
           </button>
+
+          {/* 生成摘要下拉菜单 */}
+          <div class="relative group">
+            <button
+              disabled={generating()}
+              class="px-3 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded-lg text-sm transition-colors"
+            >
+              {generating() ? "生成中..." : "生成摘要 ▾"}
+            </button>
+            <div class="absolute right-0 mt-1 w-32 bg-background-card border border-gray-700 rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
+              <button
+                onClick={() => triggerSummary("short")}
+                disabled={generating()}
+                class="w-full px-3 py-2 text-sm text-left hover:bg-gray-700 rounded-t-lg disabled:opacity-50"
+              >
+                15分钟摘要
+              </button>
+              <button
+                onClick={() => triggerSummary("daily")}
+                disabled={generating()}
+                class="w-full px-3 py-2 text-sm text-left hover:bg-gray-700 rounded-b-lg disabled:opacity-50"
+              >
+                每日摘要
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

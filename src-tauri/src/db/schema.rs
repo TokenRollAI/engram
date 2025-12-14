@@ -51,16 +51,9 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
-    // 创建 vec0 向量索引表（sqlite-vec）
-    // 使用 384 维向量（all-MiniLM-L6-v2 模型输出）
-    conn.execute_batch(
-        r#"
-        CREATE VIRTUAL TABLE IF NOT EXISTS traces_vec USING vec0(
-            trace_id INTEGER PRIMARY KEY,
-            embedding FLOAT[384]
-        );
-        "#,
-    )?;
+    // vec0 向量索引表由 Database::ensure_vec_table() 按需创建
+    // 支持任意维度的 embedding 模型（如 384、768、1024、2048 等）
+    // 首次插入向量时会自动检测维度并创建表
 
     // 创建同步触发器
     conn.execute_batch(

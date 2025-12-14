@@ -55,6 +55,7 @@ fn main() {
             commands::get_summary_by_id,
             commands::get_latest_summary,
             commands::delete_summary,
+            commands::trigger_summary,
             // Entity commands
             commands::get_entities,
             commands::get_entity_by_name,

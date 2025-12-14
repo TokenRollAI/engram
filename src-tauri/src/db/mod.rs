@@ -497,6 +497,12 @@ impl Database {
             rusqlite::params![embedding, trace_id],
         )?;
 
+        // 计算向量维度（每个 f32 占 4 字节）
+        let dimension = embedding.len() / 4;
+
+        // 确保 vec0 表存在且维度正确
+        Self::ensure_vec_table_inner(&conn, dimension)?;
+
         // 同时插入到 vec0 向量索引表
         // embedding 是 f32 数组的字节表示，直接传递给 sqlite-vec
         conn.execute(
@@ -504,7 +510,58 @@ impl Database {
             rusqlite::params![trace_id, embedding],
         )?;
 
-        debug!("Updated embedding for trace {} (vec index synced)", trace_id);
+        debug!("Updated embedding for trace {} (vec index synced, dim={})", trace_id, dimension);
+        Ok(())
+    }
+
+    /// 确保 vec0 向量索引表存在且维度正确
+    fn ensure_vec_table_inner(conn: &Connection, dimension: usize) -> Result<()> {
+        // 检查表是否存在
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='traces_vec'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        if table_exists {
+            // 尝试插入一个测试向量来检查维度
+            // 创建一个正确维度的零向量
+            let test_embedding: Vec<u8> = vec![0u8; dimension * 4];
+
+            // 尝试执行一个查询来验证维度
+            let dimension_ok = conn
+                .execute(
+                    "INSERT OR REPLACE INTO traces_vec (trace_id, embedding) VALUES (-1, ?1)",
+                    rusqlite::params![test_embedding],
+                )
+                .is_ok();
+
+            if dimension_ok {
+                // 删除测试数据
+                let _ = conn.execute("DELETE FROM traces_vec WHERE trace_id = -1", []);
+                return Ok(());
+            }
+
+            // 维度不匹配，需要重建表
+            info!(
+                "Vector dimension changed, rebuilding traces_vec table with {} dimensions",
+                dimension
+            );
+            conn.execute_batch("DROP TABLE IF EXISTS traces_vec")?;
+        }
+
+        // 表不存在或需要重建，创建新表
+        let sql = format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS traces_vec USING vec0(
+                trace_id INTEGER PRIMARY KEY,
+                embedding FLOAT[{}]
+            )",
+            dimension
+        );
+
+        conn.execute_batch(&sql)?;
+        info!("Created traces_vec table with dimension {}", dimension);
+
         Ok(())
     }
 

@@ -31,10 +31,10 @@ const Chat: Component = () => {
   const [timeRange, setTimeRange] = createSignal<"today" | "week" | "month" | "all">("today");
   const [showFilters, setShowFilters] = createSignal(false);
 
-  // 获取时间戳
+  // 获取时间戳（毫秒级，与后端数据库保持一致）
   const getTimeRange = (): { start: number; end: number } => {
-    const now = Math.floor(Date.now() / 1000);
-    const day = 24 * 3600;
+    const now = Date.now();
+    const day = 24 * 3600 * 1000; // 毫秒
 
     switch (timeRange()) {
       case "today":
