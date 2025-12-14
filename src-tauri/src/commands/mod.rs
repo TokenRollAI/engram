@@ -2,7 +2,6 @@
 //!
 //! 提供前端调用的 API 接口。
 
-use crate::ai::TextEmbedder;
 use crate::daemon::DaemonStatus;
 use crate::db::models::{SearchResult, Settings, StorageStats, Trace};
 use crate::AppState;
@@ -77,7 +76,7 @@ pub async fn search_traces(
         let embedder = state.embedder.read().await;
         if embedder.is_initialized() {
             // 生成查询向量
-            match embedder.embed(&query) {
+            match embedder.embed_sync(&query) {
                 Ok(query_embedding) => {
                     // 混合搜索
                     let hybrid_results = state

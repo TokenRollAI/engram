@@ -266,7 +266,7 @@ impl EngramDaemon {
             is_idle: false,
             ocr_text: None,
             ocr_json: None,
-            phash: Some(phash_hex),
+            phash: Some(phash_hex.into_bytes()),
         };
 
         db.insert_trace(&trace)?;

@@ -25,7 +25,7 @@ pub struct Database {
 impl Database {
     /// 创建或打开数据库
     pub fn new() -> Result<Self> {
-        let data_dir = Self::get_data_dir()?;
+        let data_dir = Self::resolve_data_dir()?;
         fs::create_dir_all(&data_dir)?;
 
         let db_path = data_dir.join("engram.db");
@@ -42,8 +42,8 @@ impl Database {
         })
     }
 
-    /// 获取数据目录
-    fn get_data_dir() -> Result<PathBuf> {
+    /// 获取数据目录（静态方法）
+    fn resolve_data_dir() -> Result<PathBuf> {
         if let Some(proj_dirs) = ProjectDirs::from("com", "engram", "Engram") {
             Ok(proj_dirs.data_dir().to_path_buf())
         } else {

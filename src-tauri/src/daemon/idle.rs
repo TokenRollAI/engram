@@ -23,7 +23,7 @@ impl IdleDetector {
     /// 获取当前闲置时间（毫秒）
     pub fn get_idle_time_ms(&self) -> u64 {
         match user_idle::UserIdle::get_time() {
-            Ok(idle) => idle.as_millis() as u64,
+            Ok(idle) => idle.as_milliseconds() as u64,
             Err(e) => {
                 debug!("Failed to get idle time: {}", e);
                 0

@@ -207,11 +207,10 @@ impl TextEmbedder {
     fn init_local_model(&mut self) -> Result<()> {
         info!("Initializing local embedding model (all-MiniLM-L6-v2)...");
 
-        let model = fastembed::TextEmbedding::try_new(fastembed::InitOptions {
-            model_name: fastembed::EmbeddingModel::AllMiniLML6V2,
-            show_download_progress: true,
-            ..Default::default()
-        })?;
+        let model = fastembed::TextEmbedding::try_new(
+            fastembed::InitOptions::new(fastembed::EmbeddingModel::AllMiniLML6V2)
+                .with_show_download_progress(true)
+        )?;
 
         *self.local_model.lock().unwrap() = Some(model);
         self.embedding_dim = 384;
