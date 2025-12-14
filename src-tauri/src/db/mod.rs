@@ -585,60 +585,72 @@ impl Database {
     ) -> Result<Vec<Summary>> {
         let conn = self.conn.lock().unwrap();
 
-        let sql = if summary_type.is_some() {
-            r#"
-            SELECT id, start_time, end_time, summary_type, content,
-                   structured_data, trace_count, created_at
-            FROM summaries
-            WHERE start_time >= ?1 AND end_time <= ?2 AND summary_type = ?3
-            ORDER BY start_time DESC
-            LIMIT ?4
-            "#
-        } else {
-            r#"
-            SELECT id, start_time, end_time, summary_type, content,
-                   structured_data, trace_count, created_at
-            FROM summaries
-            WHERE start_time >= ?1 AND end_time <= ?2
-            ORDER BY start_time DESC
-            LIMIT ?3
-            "#
-        };
-
-        let mut stmt = conn.prepare(sql)?;
-
-        let summaries = if let Some(stype) = summary_type {
-            stmt.query_map(rusqlite::params![start_time, end_time, stype, limit], |row| {
-                Ok(Summary {
-                    id: row.get(0)?,
-                    start_time: row.get(1)?,
-                    end_time: row.get(2)?,
-                    summary_type: row.get(3)?,
-                    content: row.get(4)?,
-                    structured_data: row.get(5)?,
-                    trace_count: row.get(6)?,
-                    created_at: row.get(7)?,
-                })
-            })?
-        } else {
-            stmt.query_map(rusqlite::params![start_time, end_time, limit], |row| {
-                Ok(Summary {
-                    id: row.get(0)?,
-                    start_time: row.get(1)?,
-                    end_time: row.get(2)?,
-                    summary_type: row.get(3)?,
-                    content: row.get(4)?,
-                    structured_data: row.get(5)?,
-                    trace_count: row.get(6)?,
-                    created_at: row.get(7)?,
-                })
-            })?
-        };
-
         let mut result = Vec::new();
-        for summary in summaries {
-            result.push(summary?);
+
+        if let Some(stype) = summary_type {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, start_time, end_time, summary_type, content,
+                       structured_data, trace_count, created_at
+                FROM summaries
+                WHERE start_time >= ?1 AND end_time <= ?2 AND summary_type = ?3
+                ORDER BY start_time DESC
+                LIMIT ?4
+                "#,
+            )?;
+
+            let summaries = stmt.query_map(
+                rusqlite::params![start_time, end_time, stype, limit],
+                |row| {
+                    Ok(Summary {
+                        id: row.get(0)?,
+                        start_time: row.get(1)?,
+                        end_time: row.get(2)?,
+                        summary_type: row.get(3)?,
+                        content: row.get(4)?,
+                        structured_data: row.get(5)?,
+                        trace_count: row.get(6)?,
+                        created_at: row.get(7)?,
+                    })
+                },
+            )?;
+
+            for summary in summaries {
+                result.push(summary?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, start_time, end_time, summary_type, content,
+                       structured_data, trace_count, created_at
+                FROM summaries
+                WHERE start_time >= ?1 AND end_time <= ?2
+                ORDER BY start_time DESC
+                LIMIT ?3
+                "#,
+            )?;
+
+            let summaries = stmt.query_map(
+                rusqlite::params![start_time, end_time, limit],
+                |row| {
+                    Ok(Summary {
+                        id: row.get(0)?,
+                        start_time: row.get(1)?,
+                        end_time: row.get(2)?,
+                        summary_type: row.get(3)?,
+                        content: row.get(4)?,
+                        structured_data: row.get(5)?,
+                        trace_count: row.get(6)?,
+                        created_at: row.get(7)?,
+                    })
+                },
+            )?;
+
+            for summary in summaries {
+                result.push(summary?);
+            }
         }
+
         Ok(result)
     }
 
@@ -775,8 +787,10 @@ impl Database {
 
         let order = if order_by_mentions { "mention_count DESC" } else { "last_seen DESC" };
 
-        let sql = if entity_type.is_some() {
-            format!(
+        let mut result = Vec::new();
+
+        if let Some(etype) = entity_type {
+            let sql = format!(
                 r#"
                 SELECT id, name, type, mention_count, first_seen, last_seen, metadata
                 FROM entities
@@ -785,9 +799,26 @@ impl Database {
                 LIMIT ?2
                 "#,
                 order
-            )
+            );
+
+            let mut stmt = conn.prepare(&sql)?;
+            let entities = stmt.query_map(rusqlite::params![etype, limit], |row| {
+                Ok(Entity {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    mention_count: row.get(3)?,
+                    first_seen: row.get(4)?,
+                    last_seen: row.get(5)?,
+                    metadata: row.get(6)?,
+                })
+            })?;
+
+            for entity in entities {
+                result.push(entity?);
+            }
         } else {
-            format!(
+            let sql = format!(
                 r#"
                 SELECT id, name, type, mention_count, first_seen, last_seen, metadata
                 FROM entities
@@ -795,13 +826,10 @@ impl Database {
                 LIMIT ?1
                 "#,
                 order
-            )
-        };
+            );
 
-        let mut stmt = conn.prepare(&sql)?;
-
-        let entities = if let Some(etype) = entity_type {
-            stmt.query_map(rusqlite::params![etype, limit], |row| {
+            let mut stmt = conn.prepare(&sql)?;
+            let entities = stmt.query_map(rusqlite::params![limit], |row| {
                 Ok(Entity {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -811,25 +839,13 @@ impl Database {
                     last_seen: row.get(5)?,
                     metadata: row.get(6)?,
                 })
-            })?
-        } else {
-            stmt.query_map(rusqlite::params![limit], |row| {
-                Ok(Entity {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    entity_type: row.get(2)?,
-                    mention_count: row.get(3)?,
-                    first_seen: row.get(4)?,
-                    last_seen: row.get(5)?,
-                    metadata: row.get(6)?,
-                })
-            })?
-        };
+            })?;
 
-        let mut result = Vec::new();
-        for entity in entities {
-            result.push(entity?);
+            for entity in entities {
+                result.push(entity?);
+            }
         }
+
         Ok(result)
     }
 
