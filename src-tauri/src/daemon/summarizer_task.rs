@@ -353,6 +353,18 @@ impl SummarizerTask {
 
     /// 手动触发摘要生成
     pub async fn trigger_summary(&self, summary_type: SummaryType) -> anyhow::Result<()> {
+        // 确保 Summarizer 已初始化
+        {
+            let mut guard = self.summarizer.lock().await;
+            if guard.is_none() {
+                info!("Initializing summarizer for manual trigger...");
+                let mut new_summarizer = Summarizer::new(self.config.llm_config.clone());
+                new_summarizer.initialize().await?;
+                info!("Summarizer initialized: {}", new_summarizer.backend_name());
+                *guard = Some(new_summarizer);
+            }
+        }
+
         let now = chrono::Utc::now();
 
         match summary_type {
