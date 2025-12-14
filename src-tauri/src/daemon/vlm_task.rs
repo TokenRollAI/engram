@@ -324,7 +324,7 @@ impl VlmTask {
         )?;
 
         if !active_sessions.is_empty() {
-            parts.push("【Active Sessions（Threads）】\n请在输出 JSON 中用 existing_session_id 选择其中一个 session_id；如果都不匹配则为 null。".to_string());
+            parts.push("【Active Sessions（Threads）】\n注意：只有当前截图与某个 Session 的任务/项目/内容高度相关时才选择其 session_id；不同类型活动（工作vs娱乐）、不同项目、不同沟通对象必须分到不同 Session。如果不确定，请输出 null 新建 Session。".to_string());
             for s in active_sessions.iter() {
                 let st = chrono::DateTime::from_timestamp_millis(s.start_time)
                     .map(|t| {

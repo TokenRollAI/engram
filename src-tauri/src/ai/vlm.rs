@@ -598,10 +598,20 @@ impl VlmEngine {
 
     /// 构建分析 Prompt
     fn build_prompt() -> &'static str {
-        r#"请分析这个屏幕截图，并结合（如果提供的）同一段活动 Session 上下文，输出以下 JSON 格式（不要输出其他内容）：
+        r#"请分析这个屏幕截图，并结合（如果提供的）活动 Session 上下文，输出以下 JSON 格式（不要输出其他内容）：
+
+Session 归类规则（严格分离原则）：
+- 不同的活动类型必须分到不同 Session（如：编程 vs 娱乐、工作 vs 休闲）
+- 不同的项目/仓库/工作任务必须分到不同 Session
+- 不同的沟通对象/会议必须分到不同 Session
+- 娱乐/游戏/视频/社交媒体浏览与工作内容必须严格分开
+- 走神/休息/非生产性活动应该新建 Session，不要归入工作 Session
+- 只有当内容"高度相关且属于同一任务"时，才选择 existing_session_id
+- 如果不确定是否相关，宁可新建 Session（输出 null），也不要错误归类
+- 示例：在 VSCode 写 engram 项目 和 在 VSCode 写 other-project 应该是不同 Session
 
 关键行为标注规则：
-- 只有当“这条行为不重复，且缺少它会让 Session 的结论不完整”时才标记为关键行为
+- 只有当"这条行为不重复，且缺少它会让 Session 的结论不完整"时才标记为关键行为
 - 如果它与上下文里已有关键行为（action_description/summary）高度重复，则必须输出 is_key_action=false
 - 如果上下文里已经有很多关键行为，请更保守：每个 Session 总关键行为目标不超过 30 条
 ```json
@@ -612,11 +622,11 @@ impl VlmEngine {
   "activity_type": "活动类型：coding/browsing/reading/writing/communication/media/other",
   "entities": ["提取的关键实体：人名、项目名、URL、文件名等"],
   "is_key_action": true,
-  "action_description": "如果 is_key_action=true，用一句话客观描述“发生了什么”（不超过80字）；否则为 null",
+  "action_description": "如果 is_key_action=true，用一句话客观描述"发生了什么"（不超过80字）；否则为 null",
   "confidence": 0.95,
   "session_title": "可选：如果你认为需要更新 Session 标题则给出（20字以内），否则为 null",
   "session_description": "可选：如果你认为需要更新 Session 描述则给出（100字以内），否则为 null",
-  "existing_session_id": 123
+  "existing_session_id": "只有当内容与某个 Active Session 高度相关时才填写其 session_id，否则必须为 null"
 }
 ```"#
     }
