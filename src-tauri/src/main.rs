@@ -50,6 +50,20 @@ fn main() {
             commands::get_ai_status,
             commands::get_ai_config,
             commands::update_ai_config,
+            // Summary commands
+            commands::get_summaries,
+            commands::get_summary_by_id,
+            commands::get_latest_summary,
+            commands::delete_summary,
+            // Entity commands
+            commands::get_entities,
+            commands::get_entity_by_name,
+            commands::get_traces_by_entity,
+            commands::search_entities,
+            commands::delete_entity,
+            // Chat commands
+            commands::chat_with_memory,
+            commands::get_available_apps,
         ])
         .build(tauri::generate_context!())
         .expect("Failed to build Tauri application")

@@ -354,6 +354,70 @@ impl VlmEngine {
         info!("VLM cache cleared");
     }
 
+    /// 纯文本对话（不带图像）
+    pub async fn chat(&self, system_prompt: &str, user_message: &str) -> Result<String> {
+        if !self.is_ready {
+            return Err(anyhow!("VLM engine not initialized"));
+        }
+
+        let request = serde_json::json!({
+            "model": self.config.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": user_message
+                }
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.7
+        });
+
+        let url = format!("{}/chat/completions", self.config.endpoint);
+
+        info!(
+            "VLM Chat Request: endpoint={}, model={}, message_len={}",
+            self.config.endpoint,
+            self.config.model,
+            user_message.len()
+        );
+
+        let start_time = std::time::Instant::now();
+
+        let mut req = self.client.post(&url).json(&request);
+
+        if let Some(ref key) = self.config.api_key {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+
+        let response = req.send().await?;
+        let status = response.status();
+        let elapsed = start_time.elapsed();
+
+        info!(
+            "VLM Chat Response: status={}, elapsed={:.2}s",
+            status,
+            elapsed.as_secs_f64()
+        );
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Chat API error {}: {}", status, error_text));
+        }
+
+        let response_json: serde_json::Value = response.json().await?;
+
+        let content = response_json["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Invalid chat response format"))?
+            .to_string();
+
+        Ok(content)
+    }
+
     /// 调用 OpenAI 兼容 API
     async fn call_api(&self, image_base64: &str) -> Result<ScreenDescription> {
         let request = serde_json::json!({

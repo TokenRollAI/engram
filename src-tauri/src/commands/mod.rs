@@ -588,3 +588,169 @@ pub async fn delete_entity(state: State<'_, AppState>, id: i64) -> Result<bool, 
     info!("delete_entity: id={}", id);
     state.db.delete_entity(id).map_err(|e| e.to_string())
 }
+
+// ==================== Chat Commands ====================
+
+/// Chat 请求参数
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ChatRequest {
+    /// 用户消息
+    pub message: String,
+    /// 开始时间戳（可选）
+    pub start_time: Option<i64>,
+    /// 结束时间戳（可选）
+    pub end_time: Option<i64>,
+    /// 应用过滤（可选）
+    pub app_filter: Option<Vec<String>>,
+}
+
+/// Chat 响应
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChatResponse {
+    /// 回复内容
+    pub content: String,
+    /// 使用的上下文数量
+    pub context_count: u32,
+    /// 时间范围描述
+    pub time_range: Option<String>,
+}
+
+/// 与记忆进行对话
+#[tauri::command]
+pub async fn chat_with_memory(
+    state: State<'_, AppState>,
+    request: ChatRequest,
+) -> Result<ChatResponse, String> {
+    info!(
+        "chat_with_memory: message='{}', start={:?}, end={:?}, apps={:?}",
+        request.message.chars().take(50).collect::<String>(),
+        request.start_time,
+        request.end_time,
+        request.app_filter
+    );
+
+    // 确定时间范围
+    let now = chrono::Utc::now().timestamp();
+    let (start_time, end_time) = match (request.start_time, request.end_time) {
+        (Some(s), Some(e)) => (s, e),
+        (Some(s), None) => (s, now),
+        (None, Some(e)) => (e - 24 * 3600, e), // 默认向前24小时
+        (None, None) => (now - 24 * 3600, now), // 默认最近24小时
+    };
+
+    // 获取时间范围内的 traces
+    let traces = state
+        .db
+        .get_traces(start_time, end_time, request.app_filter.as_ref(), Some(50))
+        .map_err(|e| e.to_string())?;
+
+    if traces.is_empty() {
+        return Ok(ChatResponse {
+            content: "在指定的时间范围内没有找到相关的屏幕记录。请尝试扩大时间范围或选择其他应用。".to_string(),
+            context_count: 0,
+            time_range: Some(format_time_range(start_time, end_time)),
+        });
+    }
+
+    // 构建上下文
+    let context = build_chat_context(&traces);
+    let context_count = traces.len() as u32;
+
+    // 获取 VLM 引擎进行对话
+    let vlm_guard = state.vlm.read().await;
+    let vlm = vlm_guard
+        .as_ref()
+        .ok_or("VLM 未初始化。请先在设置中配置 AI 模型。")?;
+
+    // 构建 prompt
+    let system_prompt = r#"你是 Engram 智能助手，帮助用户回忆和理解他们的屏幕活动记录。
+用户会提供一段时间内的屏幕活动摘要，你需要基于这些信息回答用户的问题。
+
+注意：
+- 只基于提供的上下文回答，不要编造信息
+- 如果信息不足，诚实告知用户
+- 回答要简洁、有帮助
+- 使用中文回复"#;
+
+    let user_prompt = format!(
+        "以下是用户的屏幕活动记录：\n\n{}\n\n用户问题：{}",
+        context, request.message
+    );
+
+    // 调用 LLM
+    let response = vlm
+        .chat(&system_prompt, &user_prompt)
+        .await
+        .map_err(|e| format!("Chat 失败: {}", e))?;
+
+    Ok(ChatResponse {
+        content: response,
+        context_count,
+        time_range: Some(format_time_range(start_time, end_time)),
+    })
+}
+
+/// 获取可用的应用列表（用于过滤）
+#[tauri::command]
+pub async fn get_available_apps(
+    state: State<'_, AppState>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+) -> Result<Vec<String>, String> {
+    let now = chrono::Utc::now().timestamp();
+    let start = start_time.unwrap_or(now - 7 * 24 * 3600); // 默认最近7天
+    let end = end_time.unwrap_or(now);
+
+    state
+        .db
+        .get_distinct_apps(start, end)
+        .map_err(|e| e.to_string())
+}
+
+/// 构建 chat 上下文
+fn build_chat_context(traces: &[Trace]) -> String {
+    let mut context = String::new();
+
+    for trace in traces.iter().take(30) {
+        // 限制30条以避免上下文过长
+        let time = chrono::DateTime::from_timestamp(trace.timestamp, 0)
+            .map(|t| t.format("%m-%d %H:%M").to_string())
+            .unwrap_or_default();
+
+        let app = trace.app_name.as_deref().unwrap_or("未知应用");
+        let title = trace.window_title.as_deref().unwrap_or("");
+
+        context.push_str(&format!("[{}] {}", time, app));
+        if !title.is_empty() {
+            context.push_str(&format!(" - {}", title));
+        }
+        context.push('\n');
+
+        if let Some(ocr_text) = &trace.ocr_text {
+            if !ocr_text.is_empty() {
+                // 截断过长的 OCR 文本
+                let text = if ocr_text.len() > 200 {
+                    format!("{}...", &ocr_text[..200])
+                } else {
+                    ocr_text.clone()
+                };
+                context.push_str(&format!("  内容: {}\n", text));
+            }
+        }
+        context.push('\n');
+    }
+
+    context
+}
+
+/// 格式化时间范围描述
+fn format_time_range(start: i64, end: i64) -> String {
+    let start_dt = chrono::DateTime::from_timestamp(start, 0)
+        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default();
+    let end_dt = chrono::DateTime::from_timestamp(end, 0)
+        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default();
+
+    format!("{} 至 {}", start_dt, end_dt)
+}

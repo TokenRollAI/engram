@@ -272,6 +272,27 @@ impl Database {
         size
     }
 
+    /// 获取时间范围内的不同应用名称
+    pub fn get_distinct_apps(&self, start_time: i64, end_time: i64) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT app_name FROM traces
+             WHERE timestamp >= ?1 AND timestamp <= ?2 AND app_name IS NOT NULL
+             ORDER BY app_name"
+        )?;
+
+        let apps = stmt.query_map(rusqlite::params![start_time, end_time], |row| {
+            row.get::<_, String>(0)
+        })?;
+
+        let mut result = Vec::new();
+        for app in apps {
+            result.push(app?);
+        }
+
+        Ok(result)
+    }
+
     /// 获取设置
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();

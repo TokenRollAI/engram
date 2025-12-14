@@ -79,6 +79,7 @@ const App: Component<ParentProps> = (props) => {
   const navItems = [
     { path: "/", label: "时间线", icon: "📅" },
     { path: "/search", label: "搜索", icon: "🔍" },
+    { path: "/chat", label: "对话", icon: "💬" },
     { path: "/summaries", label: "摘要", icon: "📝" },
     { path: "/entities", label: "实体", icon: "🏷️" },
     { path: "/settings", label: "设置", icon: "⚙️" },
