@@ -783,6 +783,23 @@ pub async fn trigger_summary(
         _ => return Err("无效的摘要类型，请使用 'short' 或 'daily'".to_string()),
     };
 
+    // 确保使用用户配置的 VLM 模型
+    // 先获取 VLM 配置，然后用它初始化 SummarizerTask
+    let vlm_guard = state.vlm.read().await;
+    if let Some(vlm) = vlm_guard.as_ref() {
+        let vlm_config = vlm.config().clone();
+        drop(vlm_guard); // 释放锁
+
+        // 使用 VLM 配置重新初始化 SummarizerTask
+        state
+            .start_summarizer_task_with_config(vlm_config)
+            .await
+            .map_err(|e| format!("初始化摘要任务失败: {}", e))?;
+    } else {
+        drop(vlm_guard);
+        return Err("VLM 未初始化。请先在设置中配置 AI 模型。".to_string());
+    }
+
     let task = state.summarizer_task.read().await;
     task.trigger_summary(stype)
         .await
