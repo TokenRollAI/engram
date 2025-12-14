@@ -376,6 +376,60 @@ text_embedding (384d)
 [存储到 SQLite]
 ```
 
+### Session 归类规则（严格分离原则）
+
+**核心设计目标**：建立清晰的 Session 边界，避免混杂不相关的活动，确保每个 Session 对应一个逻辑独立的"任务线程"。
+
+#### 必须分离的情景
+
+| 场景 | 规则 | 示例 |
+|------|------|------|
+| **活动类型** | 不同的活动类型必须分到不同 Session | 编程 vs 娱乐、工作 vs 休闲 |
+| **项目/仓库** | 不同的项目/仓库/工作任务必须分到不同 Session | engram 项目 vs other-project，即使都在 VSCode |
+| **沟通对象** | 不同的沟通对象/会议必须分到不同 Session | 与 Alice 的讨论 vs 与 Bob 的讨论 |
+| **工作 vs 娱乐** | 严格分开工作内容与娱乐/游戏/视频/社交媒体浏览 | 工作代码编写 vs YouTube 休闲浏览 |
+| **休息活动** | 走神/休息/非生产性活动应该新建 Session | 工作中的休息（喝咖啡、看新闻）vs 工作 Session |
+
+#### 决策规则
+
+1. **高度相关 + 同一任务** → 选择 `existing_session_id`
+   - 仅当内容与某个 Active Session 的任务/项目/主题高度相关时
+   - 示例：在同一个 GitHub PR 上继续讨论、同一个文件继续编辑
+
+2. **不确定 → 新建 Session**（输出 `null`）
+   - 如果判断不确定是否相关，宁可新建也不要错误归类
+   - 可以后续通过用户反馈或自动合并来优化
+
+3. **避免的错误**：
+   - ❌ 将 VSCode 中的多个项目混在一个 Session
+   - ❌ 将工作任务与娱乐活动混在一个 Session
+   - ❌ 将多次会议归到一个 Session
+   - ❌ 因为"都在浏览"就混合不同内容的浏览
+
+#### VLM Prompt 中的上下文
+
+当 VLM 分析屏幕时，会接收 **Active Sessions 列表**（当前活跃的 Session 线程），包括：
+- Session ID 和标题
+- 开始时间和最后活动时间
+- 上下文摘要（关键行为和描述）
+- 关键实体列表
+
+**VLM 的任务**：
+1. 分析当前屏幕的内容
+2. 与 Active Sessions 的上下文比对
+3. 判断是否属于现有 Session（高度相关 + 同一任务）
+4. 如果不相关或不确定，输出 `null` 新建 Session
+
+**关键提示词** (见 `src-tauri/src/daemon/vlm_task.rs:326-327`)：
+> "只有当前截图与某个 Session 的任务/项目/内容高度相关时才选择其 session_id；不同类型活动（工作vs娱乐）、不同项目、不同沟通对象必须分到不同 Session。如果不确定，请输出 null 新建 Session。"
+
+#### 关键行为标注规则
+
+在标记 `is_key_action` 时遵循：
+- 只有当"这条行为不重复，且缺少它会让 Session 的结论不完整"时才标记为 `true`
+- 如果与上下文里已有关键行为（`action_description`/`summary`）高度重复，则必须输出 `is_key_action=false`
+- 每个 Session 的关键行为目标总数不超过 30 条（避免过度标注）
+
 ### VlmConfig 配置（从 TOML 文件加载）
 
 **配置来源**: `src-tauri/src/config/mod.rs` (AppConfig) - TOML 文件存储
