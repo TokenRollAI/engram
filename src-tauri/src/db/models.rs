@@ -54,7 +54,18 @@ pub struct TextHighlight {
     pub end: usize,
 }
 
-/// 摘要记录
+/// 摘要记录（用于插入）
+#[derive(Debug, Clone)]
+pub struct NewSummary {
+    pub start_time: i64,
+    pub end_time: i64,
+    pub summary_type: String,
+    pub content: String,
+    pub structured_data: Option<String>,
+    pub trace_count: Option<u32>,
+}
+
+/// 摘要记录（从数据库读取）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Summary {
     pub id: i64,
@@ -62,16 +73,37 @@ pub struct Summary {
     pub end_time: i64,
     pub summary_type: String,
     pub content: String,
-    pub topics: Vec<String>,
-    pub entities: Vec<Entity>,
-    pub links: Vec<String>,
-    pub trace_count: u32,
+    pub structured_data: Option<String>,
+    pub trace_count: Option<u32>,
     pub created_at: i64,
 }
 
-/// 实体
+/// 实体（用于插入）
+#[derive(Debug, Clone)]
+pub struct NewEntity {
+    pub name: String,
+    pub entity_type: String,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub metadata: Option<String>,
+}
+
+/// 实体（从数据库读取）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entity {
+    pub id: i64,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    pub mention_count: u32,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub metadata: Option<String>,
+}
+
+/// 简化的实体（用于 JSON 序列化）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityRef {
     pub name: String,
     #[serde(rename = "type")]
     pub entity_type: String,
@@ -82,6 +114,7 @@ pub struct Entity {
 pub struct StorageStats {
     pub total_traces: u64,
     pub total_summaries: u64,
+    pub total_entities: u64,
     pub database_size_bytes: u64,
     pub screenshots_size_bytes: u64,
     pub oldest_trace_time: Option<i64>,

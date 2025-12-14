@@ -228,6 +228,9 @@ impl Database {
         let total_summaries: i64 =
             conn.query_row("SELECT COUNT(*) FROM summaries", [], |row| row.get(0)).unwrap_or(0);
 
+        let total_entities: i64 =
+            conn.query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0)).unwrap_or(0);
+
         let oldest_trace_time: Option<i64> =
             conn.query_row("SELECT MIN(timestamp) FROM traces", [], |row| row.get(0)).ok();
 
@@ -242,6 +245,7 @@ impl Database {
         Ok(StorageStats {
             total_traces: total_traces as u64,
             total_summaries: total_summaries as u64,
+            total_entities: total_entities as u64,
             database_size_bytes,
             screenshots_size_bytes,
             oldest_trace_time,
@@ -545,6 +549,409 @@ impl Database {
         }
 
         dot / (norm_a * norm_b)
+    }
+
+    // ==================== Summary CRUD ====================
+
+    /// 插入摘要记录
+    pub fn insert_summary(&self, summary: &NewSummary) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO summaries (
+                start_time, end_time, summary_type, content,
+                structured_data, trace_count
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            rusqlite::params![
+                summary.start_time,
+                summary.end_time,
+                summary.summary_type,
+                summary.content,
+                summary.structured_data,
+                summary.trace_count,
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 按时间范围查询摘要
+    pub fn get_summaries(
+        &self,
+        start_time: i64,
+        end_time: i64,
+        summary_type: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Summary>> {
+        let conn = self.conn.lock().unwrap();
+
+        let sql = if summary_type.is_some() {
+            r#"
+            SELECT id, start_time, end_time, summary_type, content,
+                   structured_data, trace_count, created_at
+            FROM summaries
+            WHERE start_time >= ?1 AND end_time <= ?2 AND summary_type = ?3
+            ORDER BY start_time DESC
+            LIMIT ?4
+            "#
+        } else {
+            r#"
+            SELECT id, start_time, end_time, summary_type, content,
+                   structured_data, trace_count, created_at
+            FROM summaries
+            WHERE start_time >= ?1 AND end_time <= ?2
+            ORDER BY start_time DESC
+            LIMIT ?3
+            "#
+        };
+
+        let mut stmt = conn.prepare(sql)?;
+
+        let summaries = if let Some(stype) = summary_type {
+            stmt.query_map(rusqlite::params![start_time, end_time, stype, limit], |row| {
+                Ok(Summary {
+                    id: row.get(0)?,
+                    start_time: row.get(1)?,
+                    end_time: row.get(2)?,
+                    summary_type: row.get(3)?,
+                    content: row.get(4)?,
+                    structured_data: row.get(5)?,
+                    trace_count: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })?
+        } else {
+            stmt.query_map(rusqlite::params![start_time, end_time, limit], |row| {
+                Ok(Summary {
+                    id: row.get(0)?,
+                    start_time: row.get(1)?,
+                    end_time: row.get(2)?,
+                    summary_type: row.get(3)?,
+                    content: row.get(4)?,
+                    structured_data: row.get(5)?,
+                    trace_count: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })?
+        };
+
+        let mut result = Vec::new();
+        for summary in summaries {
+            result.push(summary?);
+        }
+        Ok(result)
+    }
+
+    /// 按 ID 获取摘要
+    pub fn get_summary_by_id(&self, id: i64) -> Result<Option<Summary>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            r#"
+            SELECT id, start_time, end_time, summary_type, content,
+                   structured_data, trace_count, created_at
+            FROM summaries
+            WHERE id = ?1
+            "#,
+            rusqlite::params![id],
+            |row| {
+                Ok(Summary {
+                    id: row.get(0)?,
+                    start_time: row.get(1)?,
+                    end_time: row.get(2)?,
+                    summary_type: row.get(3)?,
+                    content: row.get(4)?,
+                    structured_data: row.get(5)?,
+                    trace_count: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(summary) => Ok(Some(summary)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 获取最近的摘要
+    pub fn get_latest_summary(&self, summary_type: &str) -> Result<Option<Summary>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            r#"
+            SELECT id, start_time, end_time, summary_type, content,
+                   structured_data, trace_count, created_at
+            FROM summaries
+            WHERE summary_type = ?1
+            ORDER BY end_time DESC
+            LIMIT 1
+            "#,
+            rusqlite::params![summary_type],
+            |row| {
+                Ok(Summary {
+                    id: row.get(0)?,
+                    start_time: row.get(1)?,
+                    end_time: row.get(2)?,
+                    summary_type: row.get(3)?,
+                    content: row.get(4)?,
+                    structured_data: row.get(5)?,
+                    trace_count: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(summary) => Ok(Some(summary)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 删除摘要
+    pub fn delete_summary(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM summaries WHERE id = ?1", rusqlite::params![id])?;
+        Ok(rows > 0)
+    }
+
+    // ==================== Entity CRUD ====================
+
+    /// 插入或更新实体
+    pub fn upsert_entity(&self, entity: &NewEntity) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+
+        // 先尝试查找现有实体
+        let existing: Result<i64, _> = conn.query_row(
+            "SELECT id FROM entities WHERE name = ?1",
+            rusqlite::params![entity.name],
+            |row| row.get(0),
+        );
+
+        match existing {
+            Ok(id) => {
+                // 更新现有实体
+                conn.execute(
+                    r#"
+                    UPDATE entities SET
+                        mention_count = mention_count + 1,
+                        last_seen = ?1,
+                        metadata = COALESCE(?2, metadata)
+                    WHERE id = ?3
+                    "#,
+                    rusqlite::params![entity.last_seen, entity.metadata, id],
+                )?;
+                Ok(id)
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                // 插入新实体
+                conn.execute(
+                    r#"
+                    INSERT INTO entities (name, type, first_seen, last_seen, metadata)
+                    VALUES (?1, ?2, ?3, ?4, ?5)
+                    "#,
+                    rusqlite::params![
+                        entity.name,
+                        entity.entity_type,
+                        entity.first_seen,
+                        entity.last_seen,
+                        entity.metadata,
+                    ],
+                )?;
+                Ok(conn.last_insert_rowid())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 获取实体列表
+    pub fn get_entities(
+        &self,
+        entity_type: Option<&str>,
+        limit: u32,
+        order_by_mentions: bool,
+    ) -> Result<Vec<Entity>> {
+        let conn = self.conn.lock().unwrap();
+
+        let order = if order_by_mentions { "mention_count DESC" } else { "last_seen DESC" };
+
+        let sql = if entity_type.is_some() {
+            format!(
+                r#"
+                SELECT id, name, type, mention_count, first_seen, last_seen, metadata
+                FROM entities
+                WHERE type = ?1
+                ORDER BY {}
+                LIMIT ?2
+                "#,
+                order
+            )
+        } else {
+            format!(
+                r#"
+                SELECT id, name, type, mention_count, first_seen, last_seen, metadata
+                FROM entities
+                ORDER BY {}
+                LIMIT ?1
+                "#,
+                order
+            )
+        };
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        let entities = if let Some(etype) = entity_type {
+            stmt.query_map(rusqlite::params![etype, limit], |row| {
+                Ok(Entity {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    mention_count: row.get(3)?,
+                    first_seen: row.get(4)?,
+                    last_seen: row.get(5)?,
+                    metadata: row.get(6)?,
+                })
+            })?
+        } else {
+            stmt.query_map(rusqlite::params![limit], |row| {
+                Ok(Entity {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    mention_count: row.get(3)?,
+                    first_seen: row.get(4)?,
+                    last_seen: row.get(5)?,
+                    metadata: row.get(6)?,
+                })
+            })?
+        };
+
+        let mut result = Vec::new();
+        for entity in entities {
+            result.push(entity?);
+        }
+        Ok(result)
+    }
+
+    /// 按名称获取实体
+    pub fn get_entity_by_name(&self, name: &str) -> Result<Option<Entity>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            r#"
+            SELECT id, name, type, mention_count, first_seen, last_seen, metadata
+            FROM entities
+            WHERE name = ?1
+            "#,
+            rusqlite::params![name],
+            |row| {
+                Ok(Entity {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    mention_count: row.get(3)?,
+                    first_seen: row.get(4)?,
+                    last_seen: row.get(5)?,
+                    metadata: row.get(6)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(entity) => Ok(Some(entity)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 关联实体和痕迹
+    pub fn link_entity_to_trace(&self, entity_id: i64, trace_id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO entity_traces (entity_id, trace_id) VALUES (?1, ?2)",
+            rusqlite::params![entity_id, trace_id],
+        )?;
+        Ok(())
+    }
+
+    /// 获取实体关联的痕迹
+    pub fn get_traces_by_entity(&self, entity_id: i64, limit: u32) -> Result<Vec<Trace>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT t.id, t.timestamp, t.image_path, t.app_name, t.window_title,
+                   t.is_fullscreen, t.window_x, t.window_y, t.window_w, t.window_h,
+                   t.is_idle, t.ocr_text, t.created_at
+            FROM traces t
+            JOIN entity_traces et ON t.id = et.trace_id
+            WHERE et.entity_id = ?1
+            ORDER BY t.timestamp DESC
+            LIMIT ?2
+            "#,
+        )?;
+
+        let traces = stmt.query_map(rusqlite::params![entity_id, limit], |row| {
+            Ok(Trace {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                image_path: row.get(2)?,
+                app_name: row.get(3)?,
+                window_title: row.get(4)?,
+                is_fullscreen: row.get(5)?,
+                window_x: row.get(6)?,
+                window_y: row.get(7)?,
+                window_w: row.get(8)?,
+                window_h: row.get(9)?,
+                is_idle: row.get(10)?,
+                ocr_text: row.get(11)?,
+                created_at: row.get(12)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for trace in traces {
+            result.push(trace?);
+        }
+        Ok(result)
+    }
+
+    /// 删除实体
+    pub fn delete_entity(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM entities WHERE id = ?1", rusqlite::params![id])?;
+        Ok(rows > 0)
+    }
+
+    /// 搜索实体
+    pub fn search_entities(&self, query: &str, limit: u32) -> Result<Vec<Entity>> {
+        let conn = self.conn.lock().unwrap();
+        let pattern = format!("%{}%", query);
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, name, type, mention_count, first_seen, last_seen, metadata
+            FROM entities
+            WHERE name LIKE ?1
+            ORDER BY mention_count DESC
+            LIMIT ?2
+            "#,
+        )?;
+
+        let entities = stmt.query_map(rusqlite::params![pattern, limit], |row| {
+            Ok(Entity {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                entity_type: row.get(2)?,
+                mention_count: row.get(3)?,
+                first_seen: row.get(4)?,
+                last_seen: row.get(5)?,
+                metadata: row.get(6)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for entity in entities {
+            result.push(entity?);
+        }
+        Ok(result)
     }
 }
 

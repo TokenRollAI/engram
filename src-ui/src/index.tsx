@@ -4,6 +4,8 @@ import { Router, Route } from "@solidjs/router";
 import App from "./App";
 import Timeline from "./pages/Timeline";
 import Search from "./pages/Search";
+import Summaries from "./pages/Summaries";
+import Entities from "./pages/Entities";
 import Settings from "./pages/Settings";
 import "./index.css";
 
@@ -15,6 +17,8 @@ if (root) {
       <Router root={App}>
         <Route path="/" component={Timeline} />
         <Route path="/search" component={Search} />
+        <Route path="/summaries" component={Summaries} />
+        <Route path="/entities" component={Entities} />
         <Route path="/settings" component={Settings} />
       </Router>
     ),

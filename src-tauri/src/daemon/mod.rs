@@ -1,16 +1,18 @@
 //! 后台守护进程模块
 //!
-//! 负责定时截图、上下文感知和图像处理。
+//! 负责定时截图、上下文感知、图像处理和摘要生成。
 
 mod capture;
 mod context;
 mod hasher;
 mod idle;
+pub mod summarizer_task;
 
 pub use capture::ScreenCapture;
 pub use context::{FocusContext, WindowWatcher};
 pub use hasher::PerceptualHasher;
 pub use idle::IdleDetector;
+pub use summarizer_task::{SummarizerTask, SummarizerTaskConfig};
 
 use crate::db::Database;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

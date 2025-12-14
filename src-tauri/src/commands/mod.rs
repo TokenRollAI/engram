@@ -4,7 +4,7 @@
 
 use crate::ai::{EmbeddingConfig, VlmConfig};
 use crate::daemon::DaemonStatus;
-use crate::db::models::{SearchResult, Settings, StorageStats, Trace};
+use crate::db::models::{Entity, SearchResult, Settings, StorageStats, Summary, Trace};
 use crate::AppState;
 use tauri::State;
 use tracing::{debug, info, warn};
@@ -416,4 +416,134 @@ async fn reinitialize_ai(state: &State<'_, AppState>, config: &AiConfig) -> Resu
     }
 
     Ok(())
+}
+
+// ==================== Summary Commands ====================
+
+/// 获取摘要列表
+#[tauri::command]
+pub async fn get_summaries(
+    state: State<'_, AppState>,
+    start_time: i64,
+    end_time: i64,
+    summary_type: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<Summary>, String> {
+    debug!(
+        "get_summaries: start={}, end={}, type={:?}, limit={:?}",
+        start_time, end_time, summary_type, limit
+    );
+
+    state
+        .db
+        .get_summaries(
+            start_time,
+            end_time,
+            summary_type.as_deref(),
+            limit.unwrap_or(50),
+        )
+        .map_err(|e| e.to_string())
+}
+
+/// 获取单个摘要
+#[tauri::command]
+pub async fn get_summary_by_id(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Option<Summary>, String> {
+    debug!("get_summary_by_id: id={}", id);
+    state.db.get_summary_by_id(id).map_err(|e| e.to_string())
+}
+
+/// 获取最近的摘要
+#[tauri::command]
+pub async fn get_latest_summary(
+    state: State<'_, AppState>,
+    summary_type: String,
+) -> Result<Option<Summary>, String> {
+    debug!("get_latest_summary: type={}", summary_type);
+    state
+        .db
+        .get_latest_summary(&summary_type)
+        .map_err(|e| e.to_string())
+}
+
+/// 删除摘要
+#[tauri::command]
+pub async fn delete_summary(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
+    info!("delete_summary: id={}", id);
+    state.db.delete_summary(id).map_err(|e| e.to_string())
+}
+
+// ==================== Entity Commands ====================
+
+/// 获取实体列表
+#[tauri::command]
+pub async fn get_entities(
+    state: State<'_, AppState>,
+    entity_type: Option<String>,
+    limit: Option<u32>,
+    order_by_mentions: Option<bool>,
+) -> Result<Vec<Entity>, String> {
+    debug!(
+        "get_entities: type={:?}, limit={:?}, order_by_mentions={:?}",
+        entity_type, limit, order_by_mentions
+    );
+
+    state
+        .db
+        .get_entities(
+            entity_type.as_deref(),
+            limit.unwrap_or(100),
+            order_by_mentions.unwrap_or(true),
+        )
+        .map_err(|e| e.to_string())
+}
+
+/// 按名称获取实体
+#[tauri::command]
+pub async fn get_entity_by_name(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<Option<Entity>, String> {
+    debug!("get_entity_by_name: name={}", name);
+    state
+        .db
+        .get_entity_by_name(&name)
+        .map_err(|e| e.to_string())
+}
+
+/// 获取实体关联的痕迹
+#[tauri::command]
+pub async fn get_traces_by_entity(
+    state: State<'_, AppState>,
+    entity_id: i64,
+    limit: Option<u32>,
+) -> Result<Vec<Trace>, String> {
+    debug!("get_traces_by_entity: entity_id={}, limit={:?}", entity_id, limit);
+    state
+        .db
+        .get_traces_by_entity(entity_id, limit.unwrap_or(50))
+        .map_err(|e| e.to_string())
+}
+
+/// 搜索实体
+#[tauri::command]
+pub async fn search_entities(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<Entity>, String> {
+    debug!("search_entities: query='{}', limit={:?}", query, limit);
+    state
+        .db
+        .search_entities(&query, limit.unwrap_or(20))
+        .map_err(|e| e.to_string())
+}
+
+/// 删除实体
+#[tauri::command]
+pub async fn delete_entity(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
+    info!("delete_entity: id={}", id);
+    state.db.delete_entity(id).map_err(|e| e.to_string())
 }
