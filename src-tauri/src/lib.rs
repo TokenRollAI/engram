@@ -51,6 +51,7 @@ impl AppState {
             app_config.capture.interval_ms,
             app_config.capture.idle_threshold_ms,
             app_config.capture.similarity_threshold,
+            app_config.capture.mode,
         )?));
 
         let vlm = Arc::new(RwLock::new(None)); // 延迟初始化

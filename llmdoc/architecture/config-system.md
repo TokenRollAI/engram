@@ -96,8 +96,13 @@ pub struct AppConfig {
 - `interval_ms` (u64): 截图间隔，单位毫秒（默认 2000）
 - `idle_threshold_ms` (u64): 闲置检测阈值，单位毫秒（默认 30000）
 - `similarity_threshold` (u32): 帧去重相似度阈值（pHash 汉明距离，默认 5）
+- `mode` (CaptureMode): 截图捕获模式，可选值：
+  - `primary_monitor`: 捕获主显示器（默认）
+  - `focused_monitor`: 捕获活动窗口所在的显示器
+  - `active_window`: 只捕获活动窗口
 
-**来源**: `src-tauri/src/config/mod.rs:20-52`
+**来源**: `src-tauri/src/config/mod.rs:20-65`
+
 
 ### StorageConfig（存储配置）
 
@@ -155,6 +160,8 @@ pub struct AppConfig {
 interval_ms = 2000
 idle_threshold_ms = 30000
 similarity_threshold = 5
+mode = "primary_monitor"  # 可选: focused_monitor, active_window
+
 
 [storage]
 hot_data_days = 7

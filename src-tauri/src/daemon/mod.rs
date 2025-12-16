@@ -16,6 +16,7 @@ pub use idle::IdleDetector;
 pub use summarizer_task::{SummarizerTask, SummarizerTaskConfig};
 pub use vlm_task::{VlmTask, VlmTaskConfig, VlmTaskStatus};
 
+use crate::config::CaptureMode;
 use crate::db::Database;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -54,6 +55,7 @@ pub struct EngramDaemon {
     capture_interval_ms: u64,
     idle_threshold_ms: u64,
     similarity_threshold: u32,
+    capture_mode: CaptureMode,
     shutdown_tx: Option<mpsc::Sender<()>>,
     last_capture_time: Arc<AtomicU64>,
     total_captures_today: Arc<AtomicU64>,
@@ -67,6 +69,7 @@ impl EngramDaemon {
             DEFAULT_CAPTURE_INTERVAL_MS,
             DEFAULT_IDLE_THRESHOLD_MS,
             DEFAULT_SIMILARITY_THRESHOLD,
+            CaptureMode::default(),
         )
     }
 
@@ -76,6 +79,7 @@ impl EngramDaemon {
         capture_interval_ms: u64,
         idle_threshold_ms: u64,
         similarity_threshold: u32,
+        capture_mode: CaptureMode,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             db,
@@ -86,6 +90,7 @@ impl EngramDaemon {
             capture_interval_ms,
             idle_threshold_ms,
             similarity_threshold,
+            capture_mode,
             shutdown_tx: None,
             last_capture_time: Arc::new(AtomicU64::new(0)),
             total_captures_today: Arc::new(AtomicU64::new(0)),
@@ -114,13 +119,14 @@ impl EngramDaemon {
         let interval_ms = self.capture_interval_ms;
         let idle_threshold_ms = self.idle_threshold_ms;
         let similarity_threshold = self.similarity_threshold;
+        let capture_mode = self.capture_mode;
 
         is_running.store(true, Ordering::SeqCst);
 
         // 启动截图循环
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_millis(interval_ms));
-            let mut screen_capture = match ScreenCapture::new() {
+            let mut screen_capture = match ScreenCapture::new(capture_mode) {
                 Ok(sc) => sc,
                 Err(e) => {
                     error!("Failed to initialize screen capture: {}", e);
@@ -161,8 +167,11 @@ impl EngramDaemon {
                             continue;
                         }
 
-                        // 执行截图
-                        match screen_capture.capture() {
+                        // 获取窗口上下文（先于截图，因为新模式需要它）
+                        let context = WindowWatcher::get_focus_context();
+
+                        // 执行截图（传入上下文）
+                        match screen_capture.capture(&context) {
                             Ok(frame) => {
                                 // 计算感知哈希
                                 let current_hash = hasher.compute(&frame.pixels, frame.width, frame.height);
@@ -176,9 +185,6 @@ impl EngramDaemon {
                                     }
                                 }
                                 last_hash = Some(current_hash);
-
-                                // 获取窗口上下文
-                                let context = WindowWatcher::get_focus_context();
 
                                 // 保存到数据库
                                 match Self::save_frame(&db, &frame, &context, &current_hash).await {

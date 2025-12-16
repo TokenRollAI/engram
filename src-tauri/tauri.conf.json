@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.engram.app",
   "build": {
-    "beforeDevCommand": "cd src-ui && npm run dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "cd src-ui && npm run build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../src-ui/dist"
   },
   "app": {

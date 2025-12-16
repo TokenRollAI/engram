@@ -17,6 +17,19 @@ pub use crate::ai::embedding::EmbeddingConfig;
 pub use crate::ai::vlm::VlmConfig;
 pub use crate::daemon::vlm_task::VlmTaskConfig;
 
+/// 截图捕获模式
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureMode {
+    /// 捕获主显示器（默认行为）
+    #[default]
+    PrimaryMonitor,
+    /// 捕获活动窗口所在的显示器
+    FocusedMonitor,
+    /// 只捕获活动窗口
+    ActiveWindow,
+}
+
 /// 截图捕获配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureConfig {
@@ -29,6 +42,9 @@ pub struct CaptureConfig {
     /// 相似度阈值（pHash 汉明距离）
     #[serde(default = "default_similarity_threshold")]
     pub similarity_threshold: u32,
+    /// 截图捕获模式
+    #[serde(default)]
+    pub mode: CaptureMode,
 }
 
 fn default_capture_interval() -> u64 {
@@ -47,9 +63,11 @@ impl Default for CaptureConfig {
             interval_ms: default_capture_interval(),
             idle_threshold_ms: default_idle_threshold(),
             similarity_threshold: default_similarity_threshold(),
+            mode: CaptureMode::default(),
         }
     }
 }
+
 
 /// 数据存储配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
