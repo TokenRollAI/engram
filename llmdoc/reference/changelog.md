@@ -6,6 +6,244 @@
 
 ---
 
+## [Chat 对话页面 Markdown 渲染增强] - 2025-12-21
+
+### 变更内容
+
+为 Chat 对话页面添加了完整的 Markdown 渲染支持，包括代码语法高亮功能，提升 AI 回复的可读性和呈现质量。
+
+### 新增依赖
+
+`src-ui/package.json`:
+- `marked` (^17.0.1) - Markdown 解析库，支持 GFM 规范
+- `@tailwindcss/typography` (^0.5.19) - Tailwind 排版插件，提供 prose 样式
+- `prismjs` (^1.30.0) - 代码语法高亮库，支持 10+ 编程语言
+- `@types/prismjs` (^1.26.5) - TypeScript 类型定义
+
+### 新增文件
+
+**src-ui/src/components/Markdown.tsx** (~75 行):
+- `Markdown` 组件：通用 Markdown 渲染组件
+- 集成 marked 库进行 Markdown 解析
+- 集成 Prism.js 进行代码块高亮
+- 支持属性：`content` (Markdown 文本)、`class` (自定义 CSS 类)
+- 自定义渲染器，为代码块添加语言类名支持语法高亮
+
+**支持的编程语言**:
+- JavaScript / TypeScript / JSX / TSX
+- Python / Rust / Bash / SQL
+- CSS / JSON / YAML / Markdown
+- 更多语言可按需导入
+
+### 修改文件
+
+**src-ui/tailwind.config.js**:
+- 新增 `typography` 主题配置块，自定义深色主题样式
+- 配置项：链接颜色、代码块背景、标题颜色、引用块样式等
+- 新增插件：`require("@tailwindcss/typography")`
+- 支持深色模式 (darkMode: "class") 的排版样式
+
+**src-ui/src/index.css**:
+- 新增 Prism.js One Dark 主题样式（约 100 行）
+- 代码块样式：背景色 (#282c34)、字体、行高、圆角等
+- Token 颜色方案：注释、关键字、字符串、函数名等
+- 行内代码和块级代码的区分样式
+
+**src-ui/src/pages/Chat.tsx**:
+- 导入 Markdown 组件：`import Markdown from "../components/Markdown"`
+- AI 回复消息使用 Markdown 组件渲染
+- 用户消息保持纯文本渲染（无 Markdown 解析）
+
+### 功能特性
+
+#### 1. Markdown 支持
+
+- **GFM 规范** - GitHub Flavored Markdown 支持
+  - 任务列表 (- [ ] item)
+  - 表格 (| column |)
+  - 删除线 (~~text~~)
+  - 自动链接识别
+
+- **文本格式**
+  - 粗体 (**text**)
+  - 斜体 (*text*)
+  - 代码 (`code`)
+  - 链接 ([text](url))
+  - 图片 (![alt](url))
+
+- **结构元素**
+  - 标题 (# H1 - ###### H6)
+  - 列表 (有序/无序)
+  - 块引用 (> quote)
+  - 分割线 (---)
+  - 代码块 (```lang)
+
+#### 2. 代码高亮
+
+- **语言支持**：JavaScript、TypeScript、Python、Rust、Go 等 10+ 种
+- **One Dark 主题**：专业的深色代码主题
+  - 注释：灰色 (#5c6370)
+  - 关键字：紫色 (#c678dd)
+  - 字符串：绿色 (#98c379)
+  - 函数名：蓝色 (#61afef)
+  - 数字/常量：橙色 (#d19a66)
+
+- **样式特性**
+  - 行内代码：浅色背景 (#374151)，不带引号
+  - 代码块：深色背景 (#282c34)，圆角边框，可滚动
+  - 字体：等宽字体 (Menlo/Consolas/SF Mono)
+  - 行高：1.5，便于阅读
+
+#### 3. 深色主题适配
+
+- **排版颜色方案**
+  - 主文本：白色 (#ffffff)
+  - 链接：蓝色 (#3b82f6)，悬停深蓝 (#2563eb)
+  - 代码块背景：深灰 (#282c34)
+  - 引用块：左边框蓝色，文字灰色
+
+- **组件样式**
+  - 标题权重加强
+  - 链接有视觉反馈
+  - 列表符号颜色一致
+
+#### 4. 消息差异化渲染
+
+- **用户消息**：纯文本，不进行 Markdown 解析
+- **AI 回复**：使用 Markdown 组件，支持完整的 Markdown 和代码高亮
+- **好处**：
+  - AI 可以返回结构化内容（代码段、列表、表格等）
+  - 用户消息保持简洁
+  - 清晰的消息类型区分
+
+### 依赖关系图
+
+```
+Chat.tsx
+  ├─ Markdown.tsx
+  │   ├─ marked (Markdown 解析)
+  │   │   └─ GFM 支持、breaks 模式
+  │   └─ prismjs (代码高亮)
+  │       ├─ prism-javascript
+  │       ├─ prism-typescript
+  │       ├─ prism-python
+  │       ├─ prism-rust
+  │       └─ ... 其他语言
+  └─ tailwind.config.js
+      ├─ @tailwindcss/typography (prose 类)
+      └─ src/index.css (Prism One Dark 主题)
+```
+
+### 使用示例
+
+```typescript
+// 在 Chat.tsx 中的使用
+import Markdown from "../components/Markdown";
+
+// AI 回复消息使用 Markdown 渲染
+<Markdown
+  content={aiReplyText}
+  class="max-w-full"
+/>
+
+// 典型的 AI 回复内容可包含
+const aiReply = `
+# 搜索结果总结
+
+你今天在以下应用花费最多时间：
+
+## 1. VS Code (4 小时)
+\`\`\`typescript
+const result = await search("engram");
+\`\`\`
+
+## 2. Chrome (3 小时)
+- 浏览文档
+- 查看示例代码
+
+> 根据分析，你主要集中在编程任务上。
+`;
+```
+
+### 性能特性
+
+| 特性 | 说明 |
+|------|------|
+| **解析速度** | marked 库优化，毫秒级解析 |
+| **高亮速度** | Prism.js 增量高亮，快速响应 |
+| **包大小** | marked (~30KB) + prismjs (~60KB) 合理 |
+| **内存占用** | 组件级缓存，不影响整体内存 |
+
+### 代码变更摘要
+
+**新增文件**:
+- `src-ui/src/components/Markdown.tsx` (~75 行)
+
+**修改文件**:
+- `src-ui/tailwind.config.js` - 添加 typography 插件和样式配置
+- `src-ui/src/index.css` - 添加 Prism.js One Dark 主题样式 (~100 行)
+- `src-ui/src/pages/Chat.tsx` - 导入并使用 Markdown 组件
+- `src-ui/package.json` - 添加依赖版本
+
+### 质量检验
+
+#### 代码审查
+
+- `src-ui/src/components/Markdown.tsx` (`marked`, `prismjs`): 集成 Markdown 解析和代码高亮
+- `src-ui/tailwind.config.js` (`typography` 配置): 深色主题排版样式
+- `src-ui/src/index.css` (Prism 主题): One Dark 代码高亮主题
+- `src-ui/src/pages/Chat.tsx` (`Markdown` 组件): AI 回复消息渲染
+
+#### 测试场景
+
+1. **Markdown 解析**
+   - [ ] 标题 (#, ##, ###) 正确渲染
+   - [ ] 粗体和斜体格式正确
+   - [ ] 列表（有序/无序）正确渲染
+   - [ ] 链接能正确点击
+   - [ ] 表格正确显示
+
+2. **代码高亮**
+   - [ ] JavaScript 代码高亮正确
+   - [ ] Python 代码高亮正确
+   - [ ] 无语言标记时回退到纯文本
+   - [ ] 行内代码样式与块级代码区分
+
+3. **深色主题**
+   - [ ] 代码块背景合理
+   - [ ] 文本颜色清晰可读
+   - [ ] 链接可见且有悬停效果
+   - [ ] 引用块样式统一
+
+4. **Chat 集成**
+   - [ ] AI 回复正确显示为 Markdown
+   - [ ] 用户消息保持纯文本
+   - [ ] 消息历史正确渲染
+   - [ ] 不同消息类型区分明确
+
+### 未来改进方向
+
+1. **Markdown 扩展**
+   - 支持自定义 emoji
+   - 支持 Mermaid 图表
+   - 支持数学公式 (KaTeX)
+
+2. **代码高亮增强**
+   - 添加行号显示
+   - 支持行高亮
+   - 复制代码按钮
+
+3. **排版优化**
+   - 响应式表格
+   - 图片懒加载
+   - 目录生成
+
+### 文档更新
+
+- `llmdoc/reference/changelog.md` - 本条目
+
+---
+
 ## [Phase 3 M3.3 配置系统重构：SQLite → TOML] - 2025-12-15
 
 ### 变更内容
