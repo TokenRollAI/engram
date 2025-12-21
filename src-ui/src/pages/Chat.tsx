@@ -1,5 +1,6 @@
 import { Component, createSignal, For, onMount, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import Markdown from "../components/Markdown";
 
 // 类型定义
 interface ChatRequest {
@@ -272,7 +273,12 @@ const Chat: Component = () => {
                       : "bg-background-card"
                   }`}
                 >
-                  <p class="whitespace-pre-wrap">{message.content}</p>
+                  <Show
+                    when={message.role === "assistant"}
+                    fallback={<p class="whitespace-pre-wrap">{message.content}</p>}
+                  >
+                    <Markdown content={message.content} />
+                  </Show>
                   <Show when={message.role === "assistant" && message.context_count !== undefined}>
                     <p class="text-xs text-foreground-secondary mt-2">
                       基于 {message.context_count} 条记录

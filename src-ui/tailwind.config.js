@@ -46,7 +46,80 @@ export default {
           "monospace",
         ],
       },
+      // 自定义 typography 样式以匹配深色主题
+      typography: {
+        DEFAULT: {
+          css: {
+            color: "#ffffff",
+            a: {
+              color: "#3b82f6",
+              "&:hover": {
+                color: "#2563eb",
+              },
+            },
+            strong: {
+              color: "#ffffff",
+            },
+            code: {
+              color: "#e5e7eb",
+              backgroundColor: "#374151",
+              padding: "0.125rem 0.25rem",
+              borderRadius: "0.25rem",
+              fontWeight: "400",
+            },
+            "code::before": {
+              content: '""',
+            },
+            "code::after": {
+              content: '""',
+            },
+            pre: {
+              backgroundColor: "#1f2937",
+              color: "#e5e7eb",
+            },
+            h1: {
+              color: "#ffffff",
+            },
+            h2: {
+              color: "#ffffff",
+            },
+            h3: {
+              color: "#ffffff",
+            },
+            h4: {
+              color: "#ffffff",
+            },
+            blockquote: {
+              color: "#a0a0a0",
+              borderLeftColor: "#3b82f6",
+            },
+            hr: {
+              borderColor: "#4b5563",
+            },
+            ol: {
+              li: {
+                "&::marker": {
+                  color: "#a0a0a0",
+                },
+              },
+            },
+            ul: {
+              li: {
+                "&::marker": {
+                  color: "#a0a0a0",
+                },
+              },
+            },
+            th: {
+              color: "#ffffff",
+            },
+            td: {
+              color: "#e5e7eb",
+            },
+          },
+        },
+      },
     },
   },
-  plugins: [],
+  plugins: [require("@tailwindcss/typography")],
 };
